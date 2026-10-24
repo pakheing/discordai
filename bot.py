@@ -496,24 +496,24 @@ async def ask(interaction: discord.Interaction, question: str) -> None:
 @bot.tree.command(name="aihelp", description="Show what this bot can do")
 async def aihelp(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
-        "** 點樣同我傾偈**\n"
-        "- 喺任何頻道 **@提及我**，例如 `@SatoAI 你好`\n"
-        "- **回覆**我任何一則訊息\n"
-        "- 喺 AI 頻道自由傾偈 — 我會回覆每一句\n"
-        "- 附加 **圖片 / PDF / 文字檔**，我會幫你讀\n"
+        "**如何與我對話**\n"
+        "- 在任何頻道 **@提及我**，例如 `@SatoAI 你好`\n"
+        "- **回覆**我的任何一則訊息\n"
+        "- 在 AI 頻道直接對話 — 我會回覆每一句\n"
+        "- 附加 **圖片 / PDF / 文字檔**，我會幫你閱讀\n"
         "- 貼上 **網頁連結**，我會自動讀取內容（回覆會顯示 🌐）\n"
         "- 如果問題需要最新資訊，我會**自動上網搜尋**"
-        "（回覆會顯示 🔍 並附來源）。香港天氣會用天文台官方資料。\n\n"
+        "（回覆會顯示 🔍 並附來源）\n\n"
         "**指令**\n"
-        "- `/ask <問題>` — 問我問題\n"
+        "- `/ask <問題>` — 向我提問\n"
         "- `/image <描述>` — 生成圖片（10–60秒）\n"
         "- `/search <關鍵字>` — 上網搜尋並附來源回答\n"
         "- `/read <網址> [問題]` — 讀取網頁並回答問題\n"
         "- `/remind <時間> <內容>` — 設定提醒，例如 `/remind 30m 做功課`\n"
-        "- `/poll <問題> [選項]` — 建立投票，例如 `/poll 食乜好 壽司, 披薩`\n"
-        "- `/remember <嘢>` — 叫我長期記住關於你嘅事，例如 `/remember 我鍾意食壽司`\n"
-        "- `/memory` / `/forget` — 睇同刪除長期記憶\n"
-        "- `/history` — 顯示我記得幾多段對話\n"
+        "- `/poll <問題> [選項]` — 建立投票，例如 `/poll 晚餐吃什麼 壽司, 披薩`\n"
+        "- `/remember <內容>` — 讓我長期記住關於你的事，例如 `/remember 我喜歡吃壽司`\n"
+        "- `/memory` / `/forget` — 查看及刪除長期記憶\n"
+        "- `/history` — 顯示我記得多少段對話\n"
         "- `/reset` — 清除你的對話記錄\n\n"
         "**你訊息上的反應**\n"
         "👀 處理中 → ✅ 完成 → ❌ 出錯",
@@ -521,41 +521,47 @@ async def aihelp(interaction: discord.Interaction) -> None:
     )
 
 
-@bot.tree.command(name="remember", description="叫我記住關於你嘅事")
-@app_commands.describe(text="要記住嘅嘢，例如：我鍾意食壽司")
+@bot.tree.command(name="remember", description="讓我記住關於你的事")
+@app_commands.describe(text="要記住的內容，例如：我喜歡吃壽司")
 async def remember(interaction: discord.Interaction, text: str) -> None:
     uid = interaction.user.id
     memories.setdefault(uid, [])
     if len(memories[uid]) >= 50:
-        await interaction.response.send_message("記憶已滿（50條），用 /forget 刪啲舊嘅先。", ephemeral=True)
+        await interaction.response.send_message(
+            "記憶已滿（50條），請先用 /forget 刪除部分舊記憶。", ephemeral=True
+        )
         return
     memories[uid].append(text[:300])
     save_memories()
-    await interaction.response.send_message(f"記住喇！📝 ({len(memories[uid])}/50)", ephemeral=True)
+    await interaction.response.send_message(f"記住了！📝 ({len(memories[uid])}/50)", ephemeral=True)
 
 
-@bot.tree.command(name="memory", description="睇下我記住咗你啲乜")
+@bot.tree.command(name="memory", description="查看我記住了關於你的事")
 async def memory_cmd(interaction: discord.Interaction) -> None:
     facts = memories.get(interaction.user.id, [])
     if not facts:
-        await interaction.response.send_message("我仲未記住任何關於你嘅嘢，用 /remember 嚟添加。", ephemeral=True)
+        await interaction.response.send_message(
+            "我還沒記住任何關於你的事，請用 /remember 添加。", ephemeral=True
+        )
         return
     listing = "\n".join(f"{i + 1}. {f}" for i, f in enumerate(facts))
-    await interaction.response.send_message(f"我記住嘅關於你嘅嘢：\n{listing[:1900]}", ephemeral=True)
+    await interaction.response.send_message(
+        f"我記住的關於你的事：\n{listing[:1900]}", ephemeral=True
+    )
 
 
-@bot.tree.command(name="forget", description="忘記關於你嘅記憶")
-@app_commands.describe(number="要刪除嘅記憶編號（用 /memory 睇編號），或者 all 清晒佢")
+@bot.tree.command(name="forget", description="忘記關於你的記憶")
+@app_commands.describe(number="要刪除的記憶編號（用 /memory 查看編號），或 all 全部清除")
 async def forget(interaction: discord.Interaction, number: str = "all") -> None:
     uid = interaction.user.id
     facts = memories.get(uid, [])
     if not facts:
-        await interaction.response.send_message("冇嘢好忘記。", ephemeral=True)
+        await interaction.response.send_message("沒有可忘記的記憶。", ephemeral=True)
         return
     if number.lower() == "all":
         memories[uid] = []
         save_memories()
-        await interaction.response.send_message("已清空所有關於你嘅記憶。🧹", ephemeral=True)
+        await interaction.response.send_message("已清空所有關於你的記憶。🧹", ephemeral=True)
         return
     try:
         idx = int(number) - 1
@@ -564,15 +570,15 @@ async def forget(interaction: discord.Interaction, number: str = "all") -> None:
         await interaction.response.send_message(f"已忘記：{removed[:100]}", ephemeral=True)
     except (ValueError, IndexError):
         await interaction.response.send_message(
-            "請輸入有效嘅編號（用 /memory 睇編號）或者 all。", ephemeral=True
+            "請輸入有效的編號（用 /memory 查看編號）或 all。", ephemeral=True
         )
 
 
 @bot.tree.command(name="poll", description="建立投票")
 @app_commands.describe(
     question="投票問題",
-    options="選項，用逗號分隔（2至10個）；留空則為係/唔係投票",
-    hours="投票維持幾多個鐘（預設24）",
+    options="選項，用逗號分隔（2至10個）；留空則為是/否投票",
+    hours="投票持續多少小時（預設24）",
 )
 async def poll(
     interaction: discord.Interaction, question: str, options: str = "", hours: int = 24
@@ -582,7 +588,7 @@ async def poll(
     hours = max(1, min(hours, 7 * 24))
     if options and not (2 <= len(opts) <= 10):
         await interaction.response.send_message(
-            "選項數量要喺 2 至 10 個之間，用逗號分隔，例如：`選項一, 選項二, 選項三`",
+            "選項數量需在 2 至 10 個之間，用逗號分隔，例如：`選項一, 選項二, 選項三`",
             ephemeral=True,
         )
         return
@@ -594,8 +600,8 @@ async def poll(
         for o in opts:
             p.add_answer(text=o)
     else:
-        p.add_answer(text="係", emoji="👍")
-        p.add_answer(text="唔係", emoji="👎")
+        p.add_answer(text="是", emoji="👍")
+        p.add_answer(text="否", emoji="👎")
     await interaction.response.send_message(poll=p)
 
 
