@@ -477,8 +477,8 @@ async def answer_with_search(user_id: int, content, message: discord.Message = N
     return reply, query
 
 
-@bot.tree.command(name="ask", description="Ask the AI a question")
-@app_commands.describe(question="Your question")
+@bot.tree.command(name="ask", description="向我提問")
+@app_commands.describe(question="你的問題")
 async def ask(interaction: discord.Interaction, question: str) -> None:
     await interaction.response.defer()
     try:
@@ -493,7 +493,7 @@ async def ask(interaction: discord.Interaction, question: str) -> None:
     await send_reply(interaction.followup, prefix + reply)
 
 
-@bot.tree.command(name="aihelp", description="Show what this bot can do")
+@bot.tree.command(name="aihelp", description="顯示我能做什麼")
 async def aihelp(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
         "**如何與我對話**\n"
@@ -605,14 +605,14 @@ async def poll(
     await interaction.response.send_message(poll=p)
 
 
-@bot.tree.command(name="reset", description="Clear your conversation history")
+@bot.tree.command(name="reset", description="清除你的對話記錄")
 async def reset(interaction: discord.Interaction) -> None:
     history.pop(interaction.user.id, None)
     save_history()
     await interaction.response.send_message("Conversation history cleared.")
 
 
-@bot.tree.command(name="history", description="Show your saved conversation turns")
+@bot.tree.command(name="history", description="顯示我記得多少段對話")
 async def history_cmd(interaction: discord.Interaction) -> None:
     turns = len(history.get(interaction.user.id, [])) // 2
     await interaction.response.send_message(
@@ -620,10 +620,10 @@ async def history_cmd(interaction: discord.Interaction) -> None:
     )
 
 
-@bot.tree.command(name="remind", description="Set a reminder")
+@bot.tree.command(name="remind", description="設定提醒")
 @app_commands.describe(
-    duration="How long from now, e.g. 30s, 10m, 2h, 1d, or 1h30m",
-    text="What to remind you about",
+    duration="多久之後，例如 30s、10m、2h、1d 或 1h30m",
+    text="要提醒的內容",
 )
 async def remind(interaction: discord.Interaction, duration: str, text: str) -> None:
     seconds = parse_duration(duration)
@@ -644,8 +644,8 @@ async def remind(interaction: discord.Interaction, duration: str, text: str) -> 
     )
 
 
-@bot.tree.command(name="search", description="Search the web")
-@app_commands.describe(query="What to search for")
+@bot.tree.command(name="search", description="上網搜尋")
+@app_commands.describe(query="要搜尋的內容")
 async def search(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
     results = await asyncio.to_thread(web_search, query)
@@ -684,8 +684,8 @@ async def search(interaction: discord.Interaction, query: str) -> None:
     )
 
 
-@bot.tree.command(name="read", description="Read a webpage and answer questions about it")
-@app_commands.describe(url="The URL to read", question="Optional question about the page")
+@bot.tree.command(name="read", description="讀取網頁並回答問題")
+@app_commands.describe(url="要讀取的網址", question="關於該網頁的問題（可選）")
 async def read_url(interaction: discord.Interaction, url: str, question: str = None) -> None:
     await interaction.response.defer()
     try:
@@ -715,8 +715,8 @@ async def read_url(interaction: discord.Interaction, url: str, question: str = N
     await interaction.followup.send(reply[:2000])
 
 
-@bot.tree.command(name="image", description="Generate an image from a text prompt")
-@app_commands.describe(prompt="What to draw")
+@bot.tree.command(name="image", description="根據描述生成圖片")
+@app_commands.describe(prompt="想畫什麼")
 async def image(interaction: discord.Interaction, prompt: str) -> None:
     await interaction.response.defer()
     url = (
