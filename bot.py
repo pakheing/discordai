@@ -6,6 +6,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -301,7 +302,6 @@ class SCRPBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
-        asyncio.create_task(start_web_server())
         await self.tree.sync()
 
     async def on_ready(self) -> None:
@@ -670,12 +670,20 @@ async def on_message(message: discord.Message) -> None:
             await react(message, "❌")
 
 
+def run_web_server() -> None:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_web_server())
+    loop.run_forever()
+
+
 def main() -> None:
     if not DISCORD_TOKEN:
         raise SystemExit("Set the DISCORD_BOT_TOKEN environment variable.")
     if not SCRP_API_KEY:
         raise SystemExit("Set the SCRP_API_KEY environment variable.")
     load_history()
+    threading.Thread(target=run_web_server, daemon=True).start()
     delay = 30
     while True:
         try:
