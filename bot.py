@@ -31,6 +31,7 @@ SYSTEM_PROMPT = os.environ.get(
 )
 
 MAX_HISTORY = 20
+MAX_REQUEST_CHARS = 80000
 AI_CHANNEL = os.environ.get("AI_CHANNEL", "").strip()
 TIMEZONE = os.environ.get("TIMEZONE", "Asia/Hong_Kong")
 HISTORY_FILE = os.environ.get(
@@ -80,7 +81,12 @@ def ask_scrp(messages: list[dict]) -> str:
         json={"model": SCRP_MODEL, "messages": messages},
         timeout=120,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        try:
+            detail = resp.json().get("detail") or resp.text[:300]
+        except ValueError:
+            detail = resp.text[:300]
+        raise RuntimeError(f"API error {resp.status_code}: {detail}")
     return resp.json()["choices"][0]["message"]["content"]
 
 
@@ -89,6 +95,32 @@ def get_tz() -> ZoneInfo:
         return ZoneInfo(TIMEZONE)
     except Exception:
         return ZoneInfo("UTC")
+
+
+def message_size(m: dict) -> int:
+    c = m.get("content")
+    if isinstance(c, str):
+        return len(c)
+    if isinstance(c, list):
+        return sum(len(p.get("text", "")) for p in c if isinstance(p, dict))
+    return 0
+
+
+def clamp_messages(msgs: list[dict]) -> list[dict]:
+    total = sum(message_size(m) for m in msgs)
+    while total > MAX_REQUEST_CHARS and len(msgs) > 3:
+        removed = msgs.pop(1)
+        total -= message_size(removed)
+    cap = MAX_REQUEST_CHARS // 4
+    for m in msgs[1:]:
+        c = m.get("content")
+        if isinstance(c, str) and len(c) > cap:
+            m["content"] = c[:cap]
+        elif isinstance(c, list):
+            for p in c:
+                if isinstance(p, dict) and len(p.get("text", "")) > cap:
+                    p["text"] = p["text"][:cap]
+    return msgs
 
 
 def build_messages(user_id: int, user_message) -> list[dict]:
@@ -117,7 +149,7 @@ def build_messages(user_id: int, user_message) -> list[dict]:
     ]
     msgs.extend(history.get(user_id, []))
     msgs.append({"role": "user", "content": user_message})
-    return msgs
+    return clamp_messages(msgs)
 
 
 def update_history(user_id: int, user_message: str, reply: str) -> None:
@@ -413,6 +445,7 @@ async def answer_with_search(user_id: int, content, message: discord.Message = N
             + ("\n\nFULL PAGE CONTENT:\n" + "\n\n".join(pages) if pages else "")
         ),
     }
+    clamp_messages(msgs)
     reply = await asyncio.to_thread(ask_scrp, msgs)
     return reply, query
 
