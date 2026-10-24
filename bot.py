@@ -633,6 +633,8 @@ async def on_message(message: discord.Message) -> None:
     elif message.reference and isinstance(message.reference.resolved, discord.Message):
         if message.reference.resolved.author.id == bot.user.id:
             question = message.content.strip()
+    elif isinstance(message.channel, discord.DMChannel):
+        question = message.content.strip()
     elif in_ai_channel(message.channel):
         question = message.content.strip()
     if question is not None or message.attachments:
@@ -691,9 +693,15 @@ def main() -> None:
             break
         except discord.HTTPException as e:
             if e.status == 429:
-                print(f"Rate limited on login — retrying in {delay}s...")
-                time.sleep(delay)
-                delay = min(delay * 2, 900)
+                retry_after = None
+                try:
+                    retry_after = e.response.json().get("retry_after")
+                except Exception:
+                    pass
+                wait = max(float(retry_after or 0), delay)
+                print(f"Rate limited on login (retry_after={retry_after}) — retrying in {int(wait)}s...")
+                time.sleep(wait)
+                delay = min(delay * 2, 3600)
                 continue
             raise
         except Exception:
