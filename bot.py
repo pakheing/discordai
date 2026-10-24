@@ -123,14 +123,15 @@ def clamp_messages(msgs: list[dict]) -> list[dict]:
     return msgs
 
 
-def build_messages(user_id: int, user_message) -> list[dict]:
+def build_messages(user_id: int, user_message, author: str = None) -> list[dict]:
     now = datetime.now(get_tz())
+    who = f"\n\nYou are currently talking to {author} in Discord. Address them by name when natural." if author else ""
     msgs = [
         {
             "role": "system",
             "content": (
                 f"{SYSTEM_PROMPT}\n\n"
-                f"Current date and time: {now.strftime('%A, %Y-%m-%d %H:%M (%Z)')}.\n\n"
+                f"Current date and time: {now.strftime('%A, %Y-%m-%d %H:%M (%Z)')}.{who}\n\n"
                 "You are a Discord bot. Available commands:\n"
                 "- `/image <prompt>` — generate an image\n"
                 "- `/search <query>` — search the web\n"
@@ -388,8 +389,8 @@ def wants_hko_weather(query: str) -> bool:
     return any(t in q for t in WEATHER_TERMS) and any(t in q for t in HK_TERMS)
 
 
-async def answer_with_search(user_id: int, content, message: discord.Message = None):
-    msgs = build_messages(user_id, content)
+async def answer_with_search(user_id: int, content, message: discord.Message = None, author: str = None):
+    msgs = build_messages(user_id, content, author)
     base_system = msgs[0]["content"]
     msgs[0] = {"role": "system", "content": base_system + SEARCH_INSTRUCTION}
     reply = await asyncio.to_thread(ask_scrp, msgs)
@@ -455,7 +456,9 @@ async def answer_with_search(user_id: int, content, message: discord.Message = N
 async def ask(interaction: discord.Interaction, question: str) -> None:
     await interaction.response.defer()
     try:
-        reply, query = await answer_with_search(interaction.user.id, question)
+        reply, query = await answer_with_search(
+            interaction.user.id, question, author=interaction.user.display_name
+        )
     except Exception as e:
         await interaction.followup.send(f"Error: {type(e).__name__}: {e}")
         return
@@ -683,7 +686,9 @@ async def on_message(message: discord.Message) -> None:
             if status:
                 await status.delete()
             async with message.channel.typing():
-                reply, query = await answer_with_search(message.author.id, content, message)
+                reply, query = await answer_with_search(
+                    message.author.id, content, message, author=message.author.display_name
+                )
             fetched = []
             if isinstance(content, list):
                 for p in content:
