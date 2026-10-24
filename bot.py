@@ -54,6 +54,26 @@ SEARXNG_URLS = [
     if u.strip()
 ]
 history: dict[int, list[dict]] = {}
+MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory.json")
+memories: dict[int, list[str]] = {}
+
+
+def load_memories() -> None:
+    global memories
+    try:
+        with open(MEMORY_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+        memories = {int(k): v for k, v in raw.items()}
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        memories = {}
+
+
+def save_memories() -> None:
+    try:
+        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(memories, f, ensure_ascii=False)
+    except OSError as e:
+        print(f"Warning: could not save memories: {e}")
 
 
 def load_history() -> None:
@@ -126,18 +146,24 @@ def clamp_messages(msgs: list[dict]) -> list[dict]:
 def build_messages(user_id: int, user_message, author: str = None) -> list[dict]:
     now = datetime.now(get_tz())
     who = f"\n\nYou are currently talking to {author} in Discord. Address them by name when natural." if author else ""
+    facts = memories.get(user_id, [])
+    known = ""
+    if facts:
+        known = "\n\nKnown facts about the current user (long-term memory):\n- " + "\n- ".join(facts)
     msgs = [
         {
             "role": "system",
             "content": (
                 f"{SYSTEM_PROMPT}\n\n"
-                f"Current date and time: {now.strftime('%A, %Y-%m-%d %H:%M (%Z)')}.{who}\n\n"
+                f"Current date and time: {now.strftime('%A, %Y-%m-%d %H:%M (%Z)')}.{who}{known}\n\n"
                 "You are a Discord bot. Available commands:\n"
                 "- `/image <prompt>` — generate an image\n"
                 "- `/search <query>` — search the web\n"
                 "- `/read <url> [question]` — read and summarize a webpage\n"
                 "- `/remind <duration> <text>` — set a reminder\n"
                 "- `/ask <question>` — chat with the bot\n"
+                "- `/remember <fact>` — save a long-term fact about yourself\n"
+                "- `/memory` / `/forget` — view or delete long-term memory\n"
                 "- `/history` — show conversation turns\n"
                 "- `/reset` — clear your chat history\n\n"
                 "You cannot create images yourself — tell users to use `/image`.\n"
@@ -485,12 +511,61 @@ async def aihelp(interaction: discord.Interaction) -> None:
         "- `/read <網址> [問題]` — 讀取網頁並回答問題\n"
         "- `/remind <時間> <內容>` — 設定提醒，例如 `/remind 30m 做功課`\n"
         "- `/poll <問題> [選項]` — 建立投票，例如 `/poll 食乜好 壽司, 披薩`\n"
+        "- `/remember <嘢>` — 叫我長期記住關於你嘅事，例如 `/remember 我鍾意食壽司`\n"
+        "- `/memory` / `/forget` — 睇同刪除長期記憶\n"
         "- `/history` — 顯示我記得幾多段對話\n"
         "- `/reset` — 清除你的對話記錄\n\n"
         "**你訊息上的反應**\n"
         "👀 處理中 → ✅ 完成 → ❌ 出錯",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="remember", description="叫我記住關於你嘅事")
+@app_commands.describe(text="要記住嘅嘢，例如：我鍾意食壽司")
+async def remember(interaction: discord.Interaction, text: str) -> None:
+    uid = interaction.user.id
+    memories.setdefault(uid, [])
+    if len(memories[uid]) >= 50:
+        await interaction.response.send_message("記憶已滿（50條），用 /forget 刪啲舊嘅先。", ephemeral=True)
+        return
+    memories[uid].append(text[:300])
+    save_memories()
+    await interaction.response.send_message(f"記住喇！📝 ({len(memories[uid])}/50)", ephemeral=True)
+
+
+@bot.tree.command(name="memory", description="睇下我記住咗你啲乜")
+async def memory_cmd(interaction: discord.Interaction) -> None:
+    facts = memories.get(interaction.user.id, [])
+    if not facts:
+        await interaction.response.send_message("我仲未記住任何關於你嘅嘢，用 /remember 嚟添加。", ephemeral=True)
+        return
+    listing = "\n".join(f"{i + 1}. {f}" for i, f in enumerate(facts))
+    await interaction.response.send_message(f"我記住嘅關於你嘅嘢：\n{listing[:1900]}", ephemeral=True)
+
+
+@bot.tree.command(name="forget", description="忘記關於你嘅記憶")
+@app_commands.describe(number="要刪除嘅記憶編號（用 /memory 睇編號），或者 all 清晒佢")
+async def forget(interaction: discord.Interaction, number: str = "all") -> None:
+    uid = interaction.user.id
+    facts = memories.get(uid, [])
+    if not facts:
+        await interaction.response.send_message("冇嘢好忘記。", ephemeral=True)
+        return
+    if number.lower() == "all":
+        memories[uid] = []
+        save_memories()
+        await interaction.response.send_message("已清空所有關於你嘅記憶。🧹", ephemeral=True)
+        return
+    try:
+        idx = int(number) - 1
+        removed = facts.pop(idx)
+        save_memories()
+        await interaction.response.send_message(f"已忘記：{removed[:100]}", ephemeral=True)
+    except (ValueError, IndexError):
+        await interaction.response.send_message(
+            "請輸入有效嘅編號（用 /memory 睇編號）或者 all。", ephemeral=True
+        )
 
 
 @bot.tree.command(name="poll", description="建立投票")
