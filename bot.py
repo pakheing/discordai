@@ -30,7 +30,7 @@ SYSTEM_PROMPT = os.environ.get(
     "SYSTEM_PROMPT", "You are a helpful assistant in a Discord server. Keep replies concise."
 )
 
-MAX_HISTORY = 20
+MAX_HISTORY = 30
 MAX_REQUEST_CHARS = 80000
 AI_CHANNEL = os.environ.get("AI_CHANNEL", "").strip()
 TIMEZONE = os.environ.get("TIMEZONE", "Asia/Hong_Kong")
