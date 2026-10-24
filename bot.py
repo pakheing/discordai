@@ -436,7 +436,7 @@ async def answer_with_search(user_id: int, content, message: discord.Message = N
         except discord.HTTPException:
             pass
     if not results:
-        return "I tried to search the web, but no search backend was available.", query
+        return "我想幫你上網搜尋，但搜尋服務暫時無法使用。", query
     pages = []
     if any(t in query.lower() for t in WEATHER_TERMS):
         try:
@@ -609,14 +609,14 @@ async def poll(
 async def reset(interaction: discord.Interaction) -> None:
     history.pop(interaction.user.id, None)
     save_history()
-    await interaction.response.send_message("Conversation history cleared.")
+    await interaction.response.send_message("已清除你的對話記錄。")
 
 
 @bot.tree.command(name="history", description="顯示我記得多少段對話")
 async def history_cmd(interaction: discord.Interaction) -> None:
     turns = len(history.get(interaction.user.id, [])) // 2
     await interaction.response.send_message(
-        f"You have {turns} saved conversation turn(s) (last {MAX_HISTORY // 2} kept)."
+        f"你目前有 {turns} 段對話記錄（最多保留 {MAX_HISTORY // 2} 段）。"
     )
 
 
@@ -629,7 +629,7 @@ async def remind(interaction: discord.Interaction, duration: str, text: str) -> 
     seconds = parse_duration(duration)
     if seconds is None:
         await interaction.response.send_message(
-            "Invalid duration. Use something like `30s`, `10m`, `2h`, `1d`, or `1h30m`.",
+            "時間格式無效，請用 `30s`、`10m`、`2h`、`1d` 或 `1h30m` 等格式。",
             ephemeral=True,
         )
         return
@@ -640,7 +640,7 @@ async def remind(interaction: discord.Interaction, duration: str, text: str) -> 
 
     asyncio.create_task(fire())
     await interaction.response.send_message(
-        f"Got it — I'll remind you in {format_duration(seconds)}."
+        f"收到！我會在 {format_duration(seconds)} 之後提醒你。⏰"
     )
 
 
@@ -651,7 +651,7 @@ async def search(interaction: discord.Interaction, query: str) -> None:
     results = await asyncio.to_thread(web_search, query)
     if not results:
         await interaction.followup.send(
-            "Search failed — no search backend available. "
+            "搜尋失敗 — 搜尋服務暫時無法使用。"
             "Install the ddgs package (pip install ddgs) or set your own SearXNG "
             "instance with the SEARXNG_URLS environment variable in .env."
         )
@@ -691,10 +691,10 @@ async def read_url(interaction: discord.Interaction, url: str, question: str = N
     try:
         text = await asyncio.to_thread(fetch_url_text, url)
     except Exception as e:
-        await interaction.followup.send(f"Failed to fetch {url}: {type(e).__name__}: {e}")
+        await interaction.followup.send(f"無法讀取 {url}：{type(e).__name__}: {e}")
         return
     if not text:
-        await interaction.followup.send("Could not extract any text from that page.")
+        await interaction.followup.send("無法從該網頁提取任何文字。")
         return
     try:
         reply = await asyncio.to_thread(
@@ -726,15 +726,15 @@ async def image(interaction: discord.Interaction, prompt: str) -> None:
     try:
         resp = await asyncio.to_thread(requests.get, url, None, {"timeout": 300})
     except requests.RequestException as e:
-        await interaction.followup.send(f"Error generating image: {e}")
+        await interaction.followup.send(f"生成圖片時出錯：{e}")
         return
     if resp.status_code != 200 or "image" not in resp.headers.get("Content-Type", ""):
         await interaction.followup.send(
-            f"Image generation failed (HTTP {resp.status_code}) — try a different prompt."
+            f"圖片生成失敗（HTTP {resp.status_code}），請試試其他描述。"
         )
         return
     if len(resp.content) < 5000:
-        await interaction.followup.send("Image generation returned an empty result — try again.")
+        await interaction.followup.send("圖片生成傳回空結果，請再試一次。")
         return
     fd, filename = tempfile.mkstemp(suffix=".png")
     os.close(fd)
@@ -777,7 +777,7 @@ async def on_message(message: discord.Message) -> None:
     if bot.user and bot.user.mention in message.content:
         question = message.content.replace(bot.user.mention, "").strip()
         if not question and not message.attachments:
-            await message.reply("Mention me with a question, e.g. @bot hello!")
+            await message.reply("提及我並輸入問題，例如 @SatoAI 你好！")
             return
     elif message.reference and isinstance(message.reference.resolved, discord.Message):
         if message.reference.resolved.author.id == bot.user.id:
