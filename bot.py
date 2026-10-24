@@ -8,7 +8,7 @@ import re
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import discord
@@ -471,7 +471,7 @@ async def ask(interaction: discord.Interaction, question: str) -> None:
 async def aihelp(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
         "** 點樣同我傾偈**\n"
-        "- 喺任何頻道 **@提及我**，例如 `@bot 你好`\n"
+        "- 喺任何頻道 **@提及我**，例如 `@SatoAI 你好`\n"
         "- **回覆**我任何一則訊息\n"
         "- 喺 AI 頻道自由傾偈 — 我會回覆每一句\n"
         "- 附加 **圖片 / PDF / 文字檔**，我會幫你讀\n"
@@ -484,12 +484,44 @@ async def aihelp(interaction: discord.Interaction) -> None:
         "- `/search <關鍵字>` — 上網搜尋並附來源回答\n"
         "- `/read <網址> [問題]` — 讀取網頁並回答問題\n"
         "- `/remind <時間> <內容>` — 設定提醒，例如 `/remind 30m 做功課`\n"
+        "- `/poll <問題> [選項]` — 建立投票，例如 `/poll 食乜好 壽司, 披薩`\n"
         "- `/history` — 顯示我記得幾多段對話\n"
         "- `/reset` — 清除你的對話記錄\n\n"
         "**你訊息上的反應**\n"
         "👀 處理中 → ✅ 完成 → ❌ 出錯",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="poll", description="建立投票")
+@app_commands.describe(
+    question="投票問題",
+    options="選項，用逗號分隔（2至10個）；留空則為係/唔係投票",
+    hours="投票維持幾多個鐘（預設24）",
+)
+async def poll(
+    interaction: discord.Interaction, question: str, options: str = "", hours: int = 24
+) -> None:
+    question = question[:300]
+    opts = [o.strip()[:55] for o in options.split(",") if o.strip()]
+    hours = max(1, min(hours, 7 * 24))
+    if options and not (2 <= len(opts) <= 10):
+        await interaction.response.send_message(
+            "選項數量要喺 2 至 10 個之間，用逗號分隔，例如：`選項一, 選項二, 選項三`",
+            ephemeral=True,
+        )
+        return
+    p = discord.Poll(
+        question=discord.PollMedia(text=question),
+        duration=timedelta(hours=hours),
+    )
+    if opts:
+        for o in opts:
+            p.add_answer(text=o)
+    else:
+        p.add_answer(text="係", emoji="👍")
+        p.add_answer(text="唔係", emoji="👎")
+    await interaction.response.send_message(poll=p)
 
 
 @bot.tree.command(name="reset", description="Clear your conversation history")
