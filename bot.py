@@ -6,11 +6,13 @@ import json
 import os
 import re
 import tempfile
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import discord
 import requests
+from aiohttp import web
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -277,6 +279,21 @@ def web_search(query: str, count: int = 5) -> list[dict] | None:
     return searxng_search(query, count) or duckduckgo_search(query, count)
 
 
+async def start_web_server() -> None:
+    app = web.Application()
+
+    async def handler(request: web.Request) -> web.Response:
+        return web.Response(text=f"{bot.user} is alive" if bot.user else "starting...")
+
+    app.router.add_get("/", handler)
+    port = int(os.environ.get("PORT", 8080))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Keep-alive web server listening on port {port}")
+
+
 class SCRPBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
@@ -284,6 +301,7 @@ class SCRPBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
+        asyncio.create_task(start_web_server())
         await self.tree.sync()
 
     async def on_ready(self) -> None:
@@ -658,7 +676,24 @@ def main() -> None:
     if not SCRP_API_KEY:
         raise SystemExit("Set the SCRP_API_KEY environment variable.")
     load_history()
-    bot.run(DISCORD_TOKEN)
+    delay = 30
+    while True:
+        try:
+            bot.run(DISCORD_TOKEN)
+            break
+        except discord.HTTPException as e:
+            if e.status == 429:
+                print(f"Rate limited on login — retrying in {delay}s...")
+                time.sleep(delay)
+                delay = min(delay * 2, 900)
+                continue
+            raise
+        except Exception:
+            if bot.is_closed():
+                print("Bot disconnected unexpectedly — restarting in 30s...")
+                time.sleep(30)
+                continue
+            raise
 
 
 if __name__ == "__main__":
