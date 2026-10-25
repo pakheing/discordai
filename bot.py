@@ -56,6 +56,25 @@ SEARXNG_URLS = [
 history: dict[int, list[dict]] = {}
 MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory.json")
 memories: dict[int, list[str]] = {}
+SCHEDULE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schedules.json")
+schedules: list[dict] = []
+
+
+def load_schedules() -> None:
+    global schedules
+    try:
+        with open(SCHEDULE_FILE, encoding="utf-8") as f:
+            schedules = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        schedules = []
+
+
+def save_schedules() -> None:
+    try:
+        with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+            json.dump(schedules, f, ensure_ascii=False, indent=1)
+    except OSError as e:
+        print(f"Warning: could not save schedules: {e}")
 
 
 def load_memories() -> None:
@@ -157,7 +176,6 @@ def build_messages(user_id: int, user_message, author: str = None) -> list[dict]
                 f"{SYSTEM_PROMPT}\n\n"
                 f"Current date and time: {now.strftime('%A, %Y-%m-%d %H:%M (%Z)')}.{who}{known}\n\n"
                 "You are a Discord bot. Available commands:\n"
-                "- `/image <prompt>` — generate an image\n"
                 "- `/search <query>` — search the web\n"
                 "- `/read <url> [question]` — read and summarize a webpage\n"
                 "- `/remind <duration> <text>` — set a reminder\n"
@@ -166,7 +184,6 @@ def build_messages(user_id: int, user_message, author: str = None) -> list[dict]
                 "- `/memory` / `/forget` — view or delete long-term memory\n"
                 "- `/history` — show conversation turns\n"
                 "- `/reset` — clear your chat history\n\n"
-                "You cannot create images yourself — tell users to use `/image`.\n"
                 "Do NOT end your replies with follow-up questions or offers such as "
                 "「還有什麼想知道？」「需要我幫你做其他事嗎？」— just answer the question "
                 "and stop. Only ask a clarifying question if the request is genuinely "
@@ -365,7 +382,7 @@ class SCRPBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
-        self.add_view(ImageGenView())
+        asyncio.create_task(schedule_loop())
         await self.tree.sync()
 
     async def on_ready(self) -> None:
@@ -375,10 +392,9 @@ class SCRPBot(commands.Bot):
 bot = SCRPBot()
 
 
-async def send_reply(target, reply: str, view=None) -> None:
-    chunks = [reply[i : i + 2000] for i in range(0, len(reply), 2000)]
-    for i, chunk in enumerate(chunks):
-        await target.send(chunk, view=view if i == len(chunks) - 1 else None)
+async def send_reply(target, reply: str) -> None:
+    for chunk in [reply[i : i + 2000] for i in range(0, len(reply), 2000)]:
+        await target.send(chunk)
 
 
 def format_search_results(results: list[dict]) -> str:
@@ -496,7 +512,7 @@ async def ask(interaction: discord.Interaction, question: str) -> None:
         return
     update_history(interaction.user.id, question, reply)
     prefix = f"🔍 (web search: {query})\n" if query else ""
-    await send_reply(interaction.followup, prefix + reply, view=maybe_image_view(reply))
+    await send_reply(interaction.followup, prefix + reply)
 
 
 @bot.tree.command(name="aihelp", description="顯示我能做什麼")
@@ -512,13 +528,14 @@ async def aihelp(interaction: discord.Interaction) -> None:
         "（回覆會顯示 🔍 並附來源）\n\n"
         "**指令**\n"
         "- `/ask <問題>` — 向我提問\n"
-        "- `/image <描述>` — 生成圖片（10–60秒）\n"
         "- `/search <關鍵字>` — 上網搜尋並附來源回答\n"
         "- `/read <網址> [問題]` — 讀取網頁並回答問題\n"
         "- `/remind <時間> <內容>` — 設定提醒，例如 `/remind 30m 做功課`\n"
         "- `/poll <問題> [選項]` — 建立投票，例如 `/poll 晚餐吃什麼 壽司, 披薩`\n"
         "- `/remember <內容>` — 讓我長期記住關於你的事，例如 `/remember 我喜歡吃壽司`\n"
         "- `/memory` / `/forget` — 查看及刪除長期記憶\n"
+        "- `/schedule <時間> <內容>` — 設定每日排程訊息，例如 `/schedule 08:30 今日香港天氣摘要`\n"
+        "- `/schedules` / `/unschedule` — 查看及刪除排程\n"
         "- `/history` — 顯示我記得多少段對話\n"
         "- `/reset` — 清除你的對話記錄\n\n"
         "**你訊息上的反應**\n"
@@ -721,108 +738,102 @@ async def read_url(interaction: discord.Interaction, url: str, question: str = N
     await interaction.followup.send(reply[:2000])
 
 
-CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
-
-
-def has_cjk(text: str) -> bool:
-    return bool(CJK_RE.search(text))
-
-
-def translate_to_english(prompt: str) -> str:
-    reply = ask_scrp(
-        [
-            {
-                "role": "system",
-                "content": "Translate the following image-generation prompt into concise "
-                "English suitable for an image generation model. Reply with ONLY the "
-                "English translation, nothing else.",
-            },
-            {"role": "user", "content": prompt},
-        ]
-    )
-    return reply.strip().strip('"')
-
-
-class ImagePromptModal(discord.ui.Modal, title="生成圖片"):
-    prompt = discord.ui.TextInput(
-        label="圖片描述",
-        placeholder="例如：一隻在太空漂浮的貓，數碼藝術風格",
-        max_length=500,
-    )
-
-    def __init__(self, message: discord.Message = None) -> None:
-        super().__init__()
-        self.message = message
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-        if self.message is not None:
-            try:
-                await self.message.edit(view=None)
-            except discord.HTTPException:
-                pass
-        await generate_and_send(interaction.followup, str(self.prompt))
-
-
-class ImageGenView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="生成圖片",
-        style=discord.ButtonStyle.primary,
-        emoji="🎨",
-        custom_id="satoai:image_gen",
-    )
-    async def gen_image(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ImagePromptModal(interaction.message))
-
-
-def maybe_image_view(reply: str) -> ImageGenView | None:
-    return ImageGenView() if "/image" in reply else None
-
-
-async def generate_and_send(target, prompt: str) -> None:
-    note = ""
-    if has_cjk(prompt):
-        note = "⚠️ 圖片生成模型對中文支援有限，建議使用英文描述。\n"
+async def run_schedule(s: dict) -> None:
+    channel = bot.get_channel(s["channel_id"])
+    if channel is None:
+        return
+    try:
+        reply, query = await answer_with_search(s.get("owner_id", 0), s["prompt"])
+    except Exception as e:
         try:
-            en_prompt = await asyncio.to_thread(translate_to_english, prompt)
-            if en_prompt:
-                note += f"已自動翻譯成英文：**{en_prompt}**\n"
-                prompt = en_prompt
-        except Exception:
+            await channel.send(f"📅 排程訊息出錯：{type(e).__name__}: {e}")
+        except discord.HTTPException:
             pass
-    url = (
-        "https://image.pollinations.ai/prompt/"
-        f"{requests.utils.quote(prompt)}?width=1024&height=1024&nologo=true"
+        return
+    prefix = "📅 排程訊息\n" + (f"🔍 (web search: {query})\n" if query else "")
+    for chunk in [reply[i : i + 2000] for i in range(0, len(reply), 2000)]:
+        try:
+            await channel.send((prefix if chunk == reply[:2000] else "") + chunk)
+        except discord.HTTPException:
+            return
+
+
+async def schedule_loop() -> None:
+    while True:
+        now = datetime.now(get_tz())
+        today = now.strftime("%Y-%m-%d")
+        hhmm = now.strftime("%H:%M")
+        for s in schedules:
+            if s.get("time") == hhmm and s.get("last_run") != today:
+                s["last_run"] = today
+                save_schedules()
+                asyncio.create_task(run_schedule(s))
+        await asyncio.sleep(20)
+
+
+TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+@bot.tree.command(name="schedule", description="設定每日排程訊息")
+@app_commands.describe(
+    time="每日幾點幾分（24小時制，例如 08:30）",
+    prompt="到時要AI生成的內容，例如：今日香港天氣摘要",
+)
+async def schedule_cmd(interaction: discord.Interaction, time: str, prompt: str) -> None:
+    m = TIME_RE.match(time.strip())
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        await interaction.response.send_message(
+            "時間格式無效，請用 24 小時制 HH:MM，例如 `08:30`。", ephemeral=True
+        )
+        return
+    hh, mm = int(m.group(1)), int(m.group(2))
+    time_str = f"{hh:02d}:{mm:02d}"
+    sid = max((s["id"] for s in schedules), default=0) + 1
+    schedules.append(
+        {
+            "id": sid,
+            "channel_id": interaction.channel_id,
+            "time": time_str,
+            "prompt": prompt[:500],
+            "owner_id": interaction.user.id,
+            "last_run": None,
+        }
     )
-    try:
-        resp = await asyncio.to_thread(requests.get, url, None, {"timeout": 300})
-    except requests.RequestException as e:
-        await target.send(note + f"生成圖片時出錯：{e}")
-        return
-    if resp.status_code != 200 or "image" not in resp.headers.get("Content-Type", ""):
-        await target.send(note + f"圖片生成失敗（HTTP {resp.status_code}），請試試其他描述。")
-        return
-    if len(resp.content) < 5000:
-        await target.send(note + "圖片生成傳回空結果，請再試一次。")
-        return
-    fd, filename = tempfile.mkstemp(suffix=".png")
-    os.close(fd)
-    try:
-        with open(filename, "wb") as f:
-            f.write(resp.content)
-        await target.send(content=note, file=discord.File(filename, filename="generated.png"))
-    finally:
-        os.remove(filename)
+    save_schedules()
+    now = datetime.now(get_tz())
+    run = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if run <= now:
+        run += timedelta(days=1)
+    await interaction.response.send_message(
+        f"✅ 已設定每日 {time_str} 在此頻道發送排程訊息（編號 {sid}）。\n"
+        f"下次執行：{run.strftime('%Y-%m-%d %H:%M')}\n"
+        f"內容：{prompt[:200]}",
+        ephemeral=True,
+    )
 
 
-@bot.tree.command(name="image", description="根據描述生成圖片")
-@app_commands.describe(prompt="想畫什麼（中文會自動翻譯成英文，效果更佳）")
-async def image(interaction: discord.Interaction, prompt: str) -> None:
-    await interaction.response.defer()
-    await generate_and_send(interaction.followup, prompt)
+@bot.tree.command(name="schedules", description="列出所有排程訊息")
+async def schedules_cmd(interaction: discord.Interaction) -> None:
+    if not schedules:
+        await interaction.response.send_message("目前沒有任何排程訊息。", ephemeral=True)
+        return
+    listing = "\n".join(
+        f"{s['id']}. 每日 {s['time']} — <#{s['channel_id']}> — {s['prompt'][:80]}"
+        for s in schedules
+    )
+    await interaction.response.send_message(f"**排程訊息：**\n{listing[:1900]}", ephemeral=True)
+
+
+@bot.tree.command(name="unschedule", description="刪除排程訊息")
+@app_commands.describe(number="要刪除的排程編號（用 /schedules 查看）")
+async def unschedule(interaction: discord.Interaction, number: int) -> None:
+    for i, s in enumerate(schedules):
+        if s["id"] == number:
+            schedules.pop(i)
+            save_schedules()
+            await interaction.response.send_message(f"已刪除排程 {number}。", ephemeral=True)
+            return
+    await interaction.response.send_message("找不到該編號的排程。", ephemeral=True)
 
 
 def in_ai_channel(channel) -> bool:
@@ -892,12 +903,8 @@ async def on_message(message: discord.Message) -> None:
                 prefix += f"🔍 (web search: {query})\n"
             update_history(message.author.id, question or "[attached file(s)]", reply)
             chunks = [reply[i : i + 2000] for i in range(0, len(reply), 2000)]
-            view = maybe_image_view(reply)
             for i, chunk in enumerate(chunks):
-                await message.reply(
-                    (prefix if i == 0 else "") + chunk,
-                    view=view if i == len(chunks) - 1 else None,
-                )
+                await message.reply((prefix if i == 0 else "") + chunk)
             await unreact(message, "👀")
             await react(message, "✅")
         except Exception as e:
