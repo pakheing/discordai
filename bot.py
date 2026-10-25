@@ -649,7 +649,7 @@ class RemindModal(discord.ui.Modal, title="設定提醒"):
         self.duration = discord.ui.TextInput(
             label="多久之後",
             placeholder="例如 30s、10m、2h、1d、1h30m",
-            default=default_duration or "30m",
+            default=default_duration or "",
             max_length=20,
         )
         self.text = discord.ui.TextInput(
@@ -769,7 +769,7 @@ class ScheduleModal(discord.ui.Modal, title="設定每日排程"):
         self.time = discord.ui.TextInput(
             label="每日幾點幾分（24小時制）",
             placeholder="例如 08:30",
-            default=default_time or "08:30",
+            default=default_time or "",
             max_length=5,
         )
         self.prompt = discord.ui.TextInput(
@@ -918,7 +918,8 @@ EXTRACTION_PROMPT = (
     '"time": "daily time HH:MM 24h format or null", '
     '"intents": ["any of: remind, schedule, poll, help — only if the user wants that '
     'feature now; empty list otherwise. Daily/recurring requests (每天/每晚/daily) '
-    'mean schedule, not remind"]}'
+    'mean schedule. One-off requests relative to now (in X minutes/hours, X分鐘後, '
+    'later today, tomorrow) mean remind, NOT schedule"]}'
 )
 
 extractions: dict[int, dict] = {}
