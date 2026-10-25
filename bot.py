@@ -1043,18 +1043,35 @@ async def memory_cmd(interaction: discord.Interaction) -> None:
     )
 
 
+class ConfirmForgetAllView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="確定清空", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        memories[interaction.user.id] = []
+        save_memories()
+        await interaction.response.edit_message(content="已清空所有關於你的記憶。🧹", view=None)
+
+    @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="已取消，記憶保持不變。", view=None)
+
+
 @bot.tree.command(name="forget", description="忘記關於你的記憶")
 @app_commands.describe(number="要刪除的記憶編號（用 /memory 查看編號），或 all 全部清除")
-async def forget(interaction: discord.Interaction, number: str = "all") -> None:
+async def forget(interaction: discord.Interaction, number: str) -> None:
     uid = interaction.user.id
     facts = memories.get(uid, [])
     if not facts:
         await interaction.response.send_message("沒有可忘記的記憶。", ephemeral=True)
         return
     if number.lower() == "all":
-        memories[uid] = []
-        save_memories()
-        await interaction.response.send_message("已清空所有關於你的記憶。🧹", ephemeral=True)
+        await interaction.response.send_message(
+            f"確定要清空全部 {len(facts)} 條記憶嗎？此操作無法復原。",
+            view=ConfirmForgetAllView(),
+            ephemeral=True,
+        )
         return
     try:
         idx = int(number) - 1
@@ -1323,15 +1340,32 @@ async def schedules_cmd(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(f"**排程訊息：**\n{listing[:1900]}", ephemeral=True)
 
 
+class ConfirmUnscheduleAllView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="確定刪除", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        count = len(schedules)
+        schedules.clear()
+        save_schedules()
+        await interaction.response.edit_message(
+            content=f"已刪除全部 {count} 個排程。🧹", view=None
+        )
+
+    @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="已取消，排程保持不變。", view=None)
+
+
 @bot.tree.command(name="unschedule", description="刪除排程訊息")
 @app_commands.describe(number="要刪除的排程編號（用 /schedules 查看），或 all 全部刪除")
 async def unschedule(interaction: discord.Interaction, number: str = "") -> None:
     if number.lower() == "all":
-        count = len(schedules)
-        schedules.clear()
-        save_schedules()
         await interaction.response.send_message(
-            f"已刪除全部 {count} 個排程。🧹", ephemeral=True
+            f"確定要刪除全部 {len(schedules)} 個排程嗎？此操作無法復原。",
+            view=ConfirmUnscheduleAllView(),
+            ephemeral=True,
         )
         return
     if not number or not number.isdigit():
