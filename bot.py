@@ -436,6 +436,14 @@ class SCRPBot(commands.Bot):
         task = asyncio.create_task(schedule_loop())
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
+        for v in (
+            RemindButtonView(),
+            ScheduleButtonView(),
+            PollButtonView(),
+            HelpButtonView(),
+            AnswerButtonView(),
+        ):
+            self.add_view(v)
         await self.tree.sync()
 
     async def on_ready(self) -> None:
@@ -568,33 +576,254 @@ async def ask(interaction: discord.Interaction, question: str) -> None:
     await send_reply(interaction.followup, prefix + reply)
 
 
+HELP_TEXT = (
+    "**如何與我對話**\n"
+    "- 在任何頻道 **@提及我**，例如 `@SatoAI 你好`\n"
+    "- **回覆**我的任何一則訊息\n"
+    "- 在 AI 頻道直接對話 — 我會回覆每一句\n"
+    "- 附加 **圖片 / PDF / 文字檔**，我會幫你閱讀\n"
+    "- 貼上 **網頁連結**，我會自動讀取內容（回覆會顯示 🌐）\n"
+    "- 如果問題需要最新資訊，我會**自動上網搜尋**"
+    "（回覆會顯示 🔍 並附來源）\n\n"
+    "**指令**\n"
+    "- `/ask <問題>` — 向我提問\n"
+    "- `/search <關鍵字>` — 上網搜尋並附來源回答\n"
+    "- `/read <網址> [問題]` — 讀取網頁並回答問題\n"
+    "- `/remind <時間> <內容>` — 設定提醒，例如 `/remind 30m 做功課`\n"
+    "- `/poll <問題> [選項]` — 建立投票，例如 `/poll 晚餐吃什麼 壽司, 披薩`\n"
+    "- `/remember <內容>` — 讓我長期記住關於你的事，例如 `/remember 我喜歡吃壽司`\n"
+    "- `/memory` / `/forget` — 查看及刪除長期記憶\n"
+    "- `/schedule <時間> <內容>` — 設定每日排程訊息，例如 `/schedule 08:30 今日香港天氣摘要`\n"
+    "- `/schedules` / `/unschedule` — 查看及刪除排程\n"
+    "- `/history` — 顯示我記得多少段對話\n"
+    "- `/reset` — 清除你的對話記錄\n\n"
+    "**你訊息上的反應**\n"
+    "👀 處理中 → ✅ 完成 → ❌ 出錯"
+)
+
+
+async def get_referenced_text(interaction: discord.Interaction) -> str:
+    msg = interaction.message
+    orig = None
+    if msg is not None and msg.reference:
+        if isinstance(msg.reference.resolved, discord.Message):
+            orig = msg.reference.resolved
+        else:
+            try:
+                orig = await msg.channel.fetch_message(msg.reference.message_id)
+            except discord.HTTPException:
+                orig = None
+    return orig.content if orig else ""
+
+
+class RemindModal(discord.ui.Modal, title="設定提醒"):
+    def __init__(self, default_text: str = "") -> None:
+        super().__init__()
+        self.duration = discord.ui.TextInput(
+            label="多久之後", placeholder="例如 30s、10m、2h、1d、1h30m", default="30m", max_length=20
+        )
+        self.text = discord.ui.TextInput(
+            label="提醒內容",
+            default=(default_text or "")[:900],
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+        )
+        self.add_item(self.duration)
+        self.add_item(self.text)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        seconds = parse_duration(str(self.duration))
+        if seconds is None:
+            await interaction.response.send_message(
+                "時間格式無效，請用 `30s`、`10m`、`2h`、`1d` 或 `1h30m` 等格式。", ephemeral=True
+            )
+            return
+        text = str(self.text)
+
+        async def fire() -> None:
+            await asyncio.sleep(seconds)
+            try:
+                await interaction.channel.send(f"{interaction.user.mention} ⏰ 提醒：{text}")
+            except discord.HTTPException:
+                pass
+
+        asyncio.create_task(fire())
+        await interaction.response.send_message(
+            f"收到！我會在 {format_duration(seconds)} 之後提醒你。⏰", ephemeral=True
+        )
+
+
+class ScheduleModal(discord.ui.Modal, title="設定每日排程"):
+    def __init__(self, default_text: str = "") -> None:
+        super().__init__()
+        self.time = discord.ui.TextInput(
+            label="每日幾點幾分（24小時制）", placeholder="例如 08:30", default="08:30", max_length=5
+        )
+        self.prompt = discord.ui.TextInput(
+            label="排程內容",
+            default=(default_text or "")[:900],
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+        )
+        self.add_item(self.time)
+        self.add_item(self.prompt)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        m = TIME_RE.match(str(self.time).strip())
+        if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+            await interaction.response.send_message(
+                "時間格式無效，請用 24 小時制 HH:MM，例如 `08:30`。", ephemeral=True
+            )
+            return
+        hh, mm = int(m.group(1)), int(m.group(2))
+        sid = max((s["id"] for s in schedules), default=0) + 1
+        schedules.append(
+            {
+                "id": sid,
+                "channel_id": interaction.channel_id,
+                "time": f"{hh:02d}:{mm:02d}",
+                "prompt": str(self.prompt)[:500],
+                "owner_id": interaction.user.id,
+                "last_run": None,
+            }
+        )
+        save_schedules()
+        now = datetime.now(get_tz())
+        run = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if run <= now:
+            run += timedelta(days=1)
+        await interaction.response.send_message(
+            f"✅ 已設定每日 {hh:02d}:{mm:02d} 在此頻道發送排程訊息（編號 {sid}）。\n"
+            f"下次執行：{run.strftime('%Y-%m-%d %H:%M')}",
+            ephemeral=True,
+        )
+
+
+class PollModal(discord.ui.Modal, title="建立投票"):
+    def __init__(self, default_text: str = "") -> None:
+        super().__init__()
+        self.question = discord.ui.TextInput(
+            label="投票問題", default=(default_text or "")[:200], max_length=300
+        )
+        self.options = discord.ui.TextInput(
+            label="選項（逗號分隔，留空則為是/否）", default="", max_length=300, required=False
+        )
+        self.add_item(self.question)
+        self.add_item(self.options)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        question = str(self.question)[:300]
+        opts = [o.strip()[:55] for o in str(self.options).split(",") if o.strip()]
+        p = discord.Poll(question=discord.PollMedia(text=question), duration=timedelta(hours=24))
+        if opts:
+            if not 2 <= len(opts) <= 10:
+                await interaction.response.send_message(
+                    "選項數量需在 2 至 10 個之間。", ephemeral=True
+                )
+                return
+            for o in opts:
+                p.add_answer(text=o)
+        else:
+            p.add_answer(text="是", emoji="👍")
+            p.add_answer(text="否", emoji="👎")
+        await interaction.response.send_message(poll=p)
+
+
+class RemindButtonView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="設定提醒", emoji="⏰", style=discord.ButtonStyle.primary, custom_id="satoai:btn_remind")
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(RemindModal(await get_referenced_text(interaction)))
+
+
+class ScheduleButtonView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="設定排程", emoji="📅", style=discord.ButtonStyle.primary, custom_id="satoai:btn_schedule")
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ScheduleModal(await get_referenced_text(interaction)))
+
+
+class PollButtonView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="建立投票", emoji="📊", style=discord.ButtonStyle.primary, custom_id="satoai:btn_poll")
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(PollModal(await get_referenced_text(interaction)))
+
+
+class HelpButtonView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="說明", emoji="❓", style=discord.ButtonStyle.secondary, custom_id="satoai:btn_help")
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_message(HELP_TEXT, ephemeral=True)
+
+
+class AnswerButtonView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="回答問題", emoji="💬", style=discord.ButtonStyle.success, custom_id="satoai:btn_answer")
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        question = ""
+        if interaction.message and interaction.message.content:
+            for line in interaction.message.content.splitlines():
+                if line.startswith(("📅", "🔍", "🌐")):
+                    continue
+                question += line + "\n"
+        question = question.strip() or "（找不到問題內容）"
+        try:
+            reply, query = await answer_with_search(
+                interaction.user.id, question, author=interaction.user.display_name
+            )
+        except Exception as e:
+            await interaction.followup.send(f"出錯：{type(e).__name__}: {e}")
+            return
+        prefix = f"🔍 (web search: {query})\n" if query else ""
+        await interaction.followup.send(prefix + reply[:2000])
+
+
+def detect_intents(text: str) -> list[dict]:
+    t = (text or "").lower()
+    out = []
+    if any(k in t for k in ("remind", "reminder", "提醒", "倒數")):
+        out.append(RemindButtonView())
+    if any(k in t for k in ("schedule", "排程", "定時", "每日", "每天", "daily", "每天")):
+        out.append(ScheduleButtonView())
+    if any(k in t for k in ("poll", "投票", "vote")):
+        out.append(PollButtonView())
+    if any(
+        k in t
+        for k in (
+            "who are you", "what can you", "你是誰", "你可以做什麼", "幫助", "說明",
+            "介紹", "aihelp", "use you", "怎麼用",
+        )
+    ):
+        out.append(HelpButtonView())
+    return out
+
+
+def build_intent_view(text: str) -> discord.ui.View | None:
+    views = detect_intents(text)
+    if not views:
+        return None
+    combined = discord.ui.View(timeout=None)
+    for v in views:
+        for child in v.children:
+            combined.add_item(child)
+    return combined
+
+
 @bot.tree.command(name="aihelp", description="顯示我能做什麼")
 async def aihelp(interaction: discord.Interaction) -> None:
-    await interaction.response.send_message(
-        "**如何與我對話**\n"
-        "- 在任何頻道 **@提及我**，例如 `@SatoAI 你好`\n"
-        "- **回覆**我的任何一則訊息\n"
-        "- 在 AI 頻道直接對話 — 我會回覆每一句\n"
-        "- 附加 **圖片 / PDF / 文字檔**，我會幫你閱讀\n"
-        "- 貼上 **網頁連結**，我會自動讀取內容（回覆會顯示 🌐）\n"
-        "- 如果問題需要最新資訊，我會**自動上網搜尋**"
-        "（回覆會顯示 🔍 並附來源）\n\n"
-        "**指令**\n"
-        "- `/ask <問題>` — 向我提問\n"
-        "- `/search <關鍵字>` — 上網搜尋並附來源回答\n"
-        "- `/read <網址> [問題]` — 讀取網頁並回答問題\n"
-        "- `/remind <時間> <內容>` — 設定提醒，例如 `/remind 30m 做功課`\n"
-        "- `/poll <問題> [選項]` — 建立投票，例如 `/poll 晚餐吃什麼 壽司, 披薩`\n"
-        "- `/remember <內容>` — 讓我長期記住關於你的事，例如 `/remember 我喜歡吃壽司`\n"
-        "- `/memory` / `/forget` — 查看及刪除長期記憶\n"
-        "- `/schedule <時間> <內容>` — 設定每日排程訊息，例如 `/schedule 08:30 今日香港天氣摘要`\n"
-        "- `/schedules` / `/unschedule` — 查看及刪除排程\n"
-        "- `/history` — 顯示我記得多少段對話\n"
-        "- `/reset` — 清除你的對話記錄\n\n"
-        "**你訊息上的反應**\n"
-        "👀 處理中 → ✅ 完成 → ❌ 出錯",
-        ephemeral=True,
-    )
+    await interaction.response.send_message(HELP_TEXT, ephemeral=True)
 
 
 @bot.tree.command(name="remember", description="讓我記住關於你的事")
@@ -811,9 +1040,22 @@ async def run_schedule(s: dict) -> None:
             pass
         return
     prefix = "📅 排程訊息\n" + (f"🔍 (web search: {query})\n" if query else "")
-    for chunk in [reply[i : i + 2000] for i in range(0, len(reply), 2000)]:
+    question_like = (
+        "?" in reply
+        or "？" in reply
+        or any(
+            k in s.get("prompt", "").lower()
+            for k in ("question", "問題", "quiz", "考", "數學", "math")
+        )
+    )
+    view = AnswerButtonView() if question_like else None
+    chunks = [reply[i : i + 2000] for i in range(0, len(reply), 2000)]
+    for i, chunk in enumerate(chunks):
         try:
-            await channel.send((prefix if chunk == reply[:2000] else "") + chunk)
+            await channel.send(
+                (prefix if i == 0 else "") + chunk,
+                view=view if i == len(chunks) - 1 else None,
+            )
         except discord.HTTPException:
             return
 
@@ -985,9 +1227,13 @@ async def on_message(message: discord.Message) -> None:
             if query:
                 prefix += f"🔍 (web search: {query})\n"
             update_history(message.author.id, question or "[attached file(s)]", reply)
+            intent_view = build_intent_view(question or "")
             chunks = [reply[i : i + 2000] for i in range(0, len(reply), 2000)]
             for i, chunk in enumerate(chunks):
-                await message.reply((prefix if i == 0 else "") + chunk)
+                await message.reply(
+                    (prefix if i == 0 else "") + chunk,
+                    view=intent_view if i == len(chunks) - 1 else None,
+                )
             await unreact(message, "👀")
             await react(message, "✅")
         except Exception as e:
