@@ -58,6 +58,34 @@ MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory.j
 memories: dict[int, list[str]] = {}
 SCHEDULE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schedules.json")
 schedules: list[dict] = []
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+user_settings: dict[int, dict] = {}
+
+
+def load_settings() -> None:
+    global user_settings
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+        user_settings = {int(k): v for k, v in raw.items()}
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        user_settings = {}
+
+
+def save_settings() -> None:
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(user_settings, f, ensure_ascii=False, indent=1)
+    except OSError as e:
+        print(f"Warning: could not save settings: {e}")
+
+
+def user_max_messages(uid: int) -> int:
+    try:
+        turns = int(user_settings.get(uid, {}).get("max_history") or 15)
+    except (TypeError, ValueError):
+        turns = 15
+    return max(2, min(turns, 20)) * 2
 
 
 def load_schedules() -> None:
@@ -217,6 +245,7 @@ def build_messages(user_id: int, user_message, author: str = None) -> list[dict]
                 "- `/memory` / `/forget` — view or delete long-term memory\n"
                 "- `/history` — show conversation turns\n"
                 "- `/reset` — clear your chat history\n"
+                "- `/aisetting` — set personal memory limit and tone/style\n"
                 "- `/aihelp` — show help\n\n"
                 "Do NOT end your replies with follow-up questions or offers such as "
                 "「還有什麼想知道？」「需要我幫你做其他事嗎？」— just answer the question "
@@ -231,6 +260,9 @@ def build_messages(user_id: int, user_message, author: str = None) -> list[dict]
     ]
     msgs.extend(history.get(user_id, []))
     msgs.append({"role": "user", "content": user_message})
+    style = (user_settings.get(user_id, {}) or {}).get("style")
+    if style:
+        msgs[0]["content"] += f"\n\nThe user's preferred tone/style: {style}"
     return clamp_messages(msgs)
 
 
@@ -238,8 +270,9 @@ def update_history(user_id: int, user_message: str, reply: str) -> None:
     history.setdefault(user_id, [])
     history[user_id].append({"role": "user", "content": user_message})
     history[user_id].append({"role": "assistant", "content": reply})
-    if len(history[user_id]) > MAX_HISTORY:
-        history[user_id] = history[user_id][-MAX_HISTORY:]
+    limit = user_max_messages(user_id)
+    if len(history[user_id]) > limit:
+        history[user_id] = history[user_id][-limit:]
     save_history()
 
 
@@ -443,6 +476,7 @@ class SCRPBot(commands.Bot):
             PollButtonView(),
             HelpButtonView(),
             AnswerButtonView(),
+            SettingsButtonView(),
         ):
             self.add_view(v)
         await self.tree.sync()
@@ -597,7 +631,8 @@ HELP_TEXT = (
     "- `/schedule <時間> <內容>` — 設定每日排程訊息，例如 `/schedule 08:30 今日香港天氣摘要`\n"
     "- `/schedules` / `/unschedule` — 查看及刪除排程\n"
     "- `/history` — 顯示我記得多少段對話\n"
-    "- `/reset` — 清除你的對話記錄\n\n"
+    "- `/reset` — 清除你的對話記錄\n"
+    "- `/aisetting` — 設定對話記憶上限同語氣風格\n\n"
     "**你訊息上的反應**\n"
     "👀 處理中 → ✅ 完成 → ❌ 出錯"
 )
@@ -641,6 +676,62 @@ def extract_duration_token(text: str) -> str | None:
     else:
         u = "w"
     return f"{value}{u}"
+
+
+class AISettingsModal(discord.ui.Modal, title="個人設定"):
+    def __init__(self, uid: int) -> None:
+        super().__init__()
+        cur = user_settings.get(uid, {})
+        self.max_history = discord.ui.TextInput(
+            label="對話記憶上限（段數，2-20）",
+            placeholder="例如 10",
+            default=str(cur.get("max_history") or 15),
+            max_length=2,
+        )
+        self.style = discord.ui.TextInput(
+            label="語氣同風格（可留空）",
+            placeholder="例如：正式啲、用英文、多啲emoji、簡短直接…",
+            default=cur.get("style") or "",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=300,
+        )
+        self.add_item(self.max_history)
+        self.add_item(self.style)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            turns = int(str(self.max_history).strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "記憶上限請輸入 2 至 20 之間的數字。", ephemeral=True
+            )
+            return
+        turns = max(2, min(turns, 20))
+        uid = interaction.user.id
+        cur = user_settings.get(uid, {})
+        cur["max_history"] = turns
+        cur["style"] = str(self.style).strip()
+        user_settings[uid] = cur
+        save_settings()
+        await interaction.response.send_message(
+            f"✅ 已更新設定：\n- 對話記憶上限：{turns} 段\n- 語氣風格：{cur['style'] or '（預設）'}",
+            ephemeral=True,
+        )
+
+
+class SettingsButtonView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="個人設定", emoji="⚙️", style=discord.ButtonStyle.primary, custom_id="satoai:btn_settings")
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(AISettingsModal(interaction.user.id))
+
+
+@bot.tree.command(name="aisetting", description="設定對話記憶上限同語氣風格")
+async def aisetting(interaction: discord.Interaction) -> None:
+    await interaction.response.send_modal(AISettingsModal(interaction.user.id))
 
 
 class RemindModal(discord.ui.Modal, title="設定提醒"):
@@ -1456,6 +1547,17 @@ async def on_message(message: discord.Message) -> None:
             if query:
                 prefix += f"🔍 (web search: {query})\n"
             update_history(message.author.id, question or "[attached file(s)]", reply)
+            if message.author.id not in user_settings:
+                user_settings[message.author.id] = {"max_history": 15, "style": ""}
+                save_settings()
+                try:
+                    await message.reply(
+                        "係第一次同我傾偈呢！🎉 撳下面按鈕設定你嘅偏好"
+                        "（之後可隨時用 `/aisetting` 修改）",
+                        view=SettingsButtonView(),
+                    )
+                except discord.HTTPException:
+                    pass
             intent_views = views_for_intents(extraction.get("intents")) or detect_intents(question or "")
             combined = None
             if intent_views:
@@ -1492,6 +1594,7 @@ def main() -> None:
     load_history()
     load_memories()
     load_schedules()
+    load_settings()
     threading.Thread(target=run_web_server, daemon=True).start()
     delay = 30
     while True:
