@@ -690,7 +690,7 @@ class AISettingsModal(discord.ui.Modal, title="個人設定"):
         )
         self.style = discord.ui.TextInput(
             label="語氣同風格（可留空）",
-            placeholder="例如：正式啲、用英文、多啲emoji、簡短直接…",
+            placeholder="例如：正式一點、用英文、多一些emoji、簡短直接…",
             default=cur.get("style") or "",
             style=discord.TextStyle.paragraph,
             required=False,
@@ -1552,7 +1552,7 @@ async def on_message(message: discord.Message) -> None:
                 save_settings()
                 try:
                     await message.reply(
-                        "係第一次同我傾偈呢！🎉 撳下面按鈕設定你嘅偏好"
+                        "這是第一次和我對話呢！🎉 按下面的按鈕設定你的偏好"
                         "（之後可隨時用 `/aisetting` 修改）",
                         view=SettingsButtonView(),
                     )
