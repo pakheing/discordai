@@ -781,6 +781,11 @@ async def read_url(interaction: discord.Interaction, url: str, question: str = N
 
 async def run_schedule(s: dict) -> None:
     channel = bot.get_channel(s["channel_id"])
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(s["channel_id"])
+        except discord.HTTPException:
+            channel = None
     print(f"[schedule] firing #{s['id']} at {s['time']} in channel {s['channel_id']}")
     if channel is None:
         print(f"[schedule] channel {s['channel_id']} not found/visible — skipped")
