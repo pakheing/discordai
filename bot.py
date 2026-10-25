@@ -202,14 +202,21 @@ def build_messages(user_id: int, user_message, author: str = None) -> list[dict]
                 f"{SYSTEM_PROMPT}\n\n"
                 f"Current date and time: {now.strftime('%A, %Y-%m-%d %H:%M (%Z)')}.{who}{known}\n\n"
                 "You are a Discord bot. Available commands:\n"
+                "- `/ask <question>` — chat with the bot\n"
                 "- `/search <query>` — search the web\n"
                 "- `/read <url> [question]` — read and summarize a webpage\n"
-                "- `/remind <duration> <text>` — set a reminder\n"
-                "- `/ask <question>` — chat with the bot\n"
+                "- `/remind <duration> <text>` — set a one-off reminder\n"
+                "- `/schedule <HH:MM> <prompt>` — set a DAILY scheduled message: at the "
+                "given time each day (Hong Kong time), you generate the prompt's content "
+                "and post it in the channel (or DM) where the command was used. "
+                "Example: `/schedule 08:30 今日香港天氣摘要`\n"
+                "- `/schedules` / `/unschedule <id>` — list or delete scheduled messages\n"
+                "- `/poll <question> [options]` — create a poll\n"
                 "- `/remember <fact>` — save a long-term fact about yourself\n"
                 "- `/memory` / `/forget` — view or delete long-term memory\n"
                 "- `/history` — show conversation turns\n"
-                "- `/reset` — clear your chat history\n\n"
+                "- `/reset` — clear your chat history\n"
+                "- `/aihelp` — show help\n\n"
                 "Do NOT end your replies with follow-up questions or offers such as "
                 "「還有什麼想知道？」「需要我幫你做其他事嗎？」— just answer the question "
                 "and stop. Only ask a clarifying question if the request is genuinely "
@@ -807,7 +814,10 @@ async def run_schedule(s: dict) -> None:
 
 
 async def schedule_loop() -> None:
-    print(f"[schedule] loop started, {len(schedules)} schedule(s) loaded")
+    print(
+        f"[schedule] loop started, {len(schedules)} schedule(s) loaded, "
+        f"timezone: {get_tz()}, current time here: {datetime.now(get_tz()).strftime('%Y-%m-%d %H:%M')}"
+    )
     for s in schedules:
         print(f"[schedule] #{s['id']} daily {s['time']} -> channel {s['channel_id']}: {s['prompt'][:50]}")
     while True:
