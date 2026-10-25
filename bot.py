@@ -1360,7 +1360,7 @@ class ConfirmUnscheduleAllView(discord.ui.View):
 
 @bot.tree.command(name="unschedule", description="刪除排程訊息")
 @app_commands.describe(number="要刪除的排程編號（用 /schedules 查看），或 all 全部刪除")
-async def unschedule(interaction: discord.Interaction, number: str = "") -> None:
+async def unschedule(interaction: discord.Interaction, number: str) -> None:
     if number.lower() == "all":
         await interaction.response.send_message(
             f"確定要刪除全部 {len(schedules)} 個排程嗎？此操作無法復原。",
