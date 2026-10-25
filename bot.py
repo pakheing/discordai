@@ -616,11 +616,40 @@ async def get_referenced_text(interaction: discord.Interaction) -> str:
     return orig.content if orig else ""
 
 
+DURATION_WORDS_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*"
+    r"(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|秒|分鐘|分鐘|小時|個鐘|日|天|星期|週)",
+    re.IGNORECASE,
+)
+
+
+def extract_duration_token(text: str) -> str | None:
+    m = DURATION_WORDS_RE.search(text or "")
+    if not m:
+        return None
+    value = m.group(1)
+    unit = m.group(2).lower()
+    if unit.startswith(("second", "sec")) or unit == "秒":
+        u = "s"
+    elif unit.startswith(("minute", "min")) or unit in ("分鐘", "分"):
+        u = "m"
+    elif unit.startswith(("hour", "hr")) or unit in ("小時", "個鐘", "鐘"):
+        u = "h"
+    elif unit.startswith("day") or unit in ("日", "天"):
+        u = "d"
+    else:
+        u = "w"
+    return f"{value}{u}"
+
+
 class RemindModal(discord.ui.Modal, title="設定提醒"):
-    def __init__(self, default_text: str = "") -> None:
+    def __init__(self, default_text: str = "", default_duration: str = None) -> None:
         super().__init__()
         self.duration = discord.ui.TextInput(
-            label="多久之後", placeholder="例如 30s、10m、2h、1d、1h30m", default="30m", max_length=20
+            label="多久之後",
+            placeholder="例如 30s、10m、2h、1d、1h30m",
+            default=default_duration or "30m",
+            max_length=20,
         )
         self.text = discord.ui.TextInput(
             label="提醒內容",
@@ -653,11 +682,94 @@ class RemindModal(discord.ui.Modal, title="設定提醒"):
         )
 
 
+def extract_event(text: str) -> str:
+    t = text or ""
+    t = re.sub(
+        r"(in|after|之後|之后|後)?\s*\d+(?:\.\d+)?\s*"
+        r"(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|秒|分鐘|分|小時|個鐘|日|天|星期|週)"
+        r"\s*(later|後|后)?",
+        " ",
+        t,
+        flags=re.I,
+    )
+    t = re.sub(
+        r"(每天|每日|每晚|今晚|凌晨|早上|上午|下午|傍晚|晚上|夜晚)?\s*\d{1,2}\s*[點点]\s*(半|\d{1,2}\s*分?)?",
+        " ",
+        t,
+    )
+    t = re.sub(r"\b\d{1,2}[:：]\d{2}\s*(am|pm)?\b", " ", t, flags=re.I)
+    t = re.sub(r"\b\d{1,2}\s*(am|pm|o'?clock)\b", " ", t, flags=re.I)
+    t = re.sub(
+        r"(remind me( to)?|set a reminder( to)?|reminder( to)?|提醒我|幫我提醒|提醒|"
+        r"set a schedule|schedule|排程|定時|每日|每天|每晚)",
+        " ",
+        t,
+        flags=re.I,
+    )
+    t = t.strip()
+    for _ in range(3):
+        t = re.sub(
+            r"^(please\s+|help\s+|can you\s+|the\s+|a\s+|an\s+|to\s+|去|做|要)+",
+            "",
+            t,
+            flags=re.I,
+        ).strip()
+    t = re.sub(r"\s+(at|on|to|在|於)$", "", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip(" ，。,.!！?？:：")
+    return t or text
+
+
+def extract_time_token(text: str) -> str | None:
+    t = text or ""
+    m = re.search(r"\b(\d{1,2})[:：](\d{2})\s*(am|pm)\b", t, re.I)
+    if m:
+        hh, mm, ap = int(m.group(1)), int(m.group(2)), m.group(3).lower()
+        if ap == "pm" and hh < 12:
+            hh += 12
+        if ap == "am" and hh == 12:
+            hh = 0
+        if hh < 24 and mm < 60:
+            return f"{hh:02d}:{mm:02d}"
+    m = re.search(r"\b(\d{1,2})[:：](\d{2})\b", t)
+    if m:
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if hh < 24 and mm < 60:
+            return f"{hh:02d}:{mm:02d}"
+    m = re.search(
+        r"(凌晨|早上|上午|下午|傍晚|晚上|今晚|每晚|夜晚|夜間|晚|夜)?\s*(\d{1,2})\s*[點点]\s*(半|(\d{1,2})\s*分?)?",
+        t,
+    )
+    if m:
+        qual, hh, half, mins = m.group(1), int(m.group(2)), m.group(3), m.group(4)
+        mm = 30 if half == "半" else (int(mins) if mins else 0)
+        if mm >= 60:
+            mm = 0
+        if qual and any(q in qual for q in ("下午", "傍晚", "晚", "夜")) and hh < 12:
+            hh += 12
+        if qual and "凌晨" in qual and hh == 12:
+            hh = 0
+        if hh < 24:
+            return f"{hh:02d}:{mm:02d}"
+    m = re.search(r"\b(\d{1,2})\s*(am|pm)\b", t, re.I)
+    if m:
+        hh, ap = int(m.group(1)), m.group(2).lower()
+        if ap == "pm" and hh < 12:
+            hh += 12
+        if ap == "am" and hh == 12:
+            hh = 0
+        if hh < 24:
+            return f"{hh:02d}:00"
+    return None
+
+
 class ScheduleModal(discord.ui.Modal, title="設定每日排程"):
-    def __init__(self, default_text: str = "") -> None:
+    def __init__(self, default_text: str = "", default_time: str = None) -> None:
         super().__init__()
         self.time = discord.ui.TextInput(
-            label="每日幾點幾分（24小時制）", placeholder="例如 08:30", default="08:30", max_length=5
+            label="每日幾點幾分（24小時制）",
+            placeholder="例如 08:30",
+            default=default_time or "08:30",
+            max_length=5,
         )
         self.prompt = discord.ui.TextInput(
             label="排程內容",
@@ -735,7 +847,10 @@ class RemindButtonView(discord.ui.View):
 
     @discord.ui.button(label="設定提醒", emoji="⏰", style=discord.ButtonStyle.primary, custom_id="satoai:btn_remind")
     async def go(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(RemindModal(await get_referenced_text(interaction)))
+        prefill = await get_prefill(interaction)
+        await interaction.response.send_modal(
+            RemindModal(prefill.get("event") or "", prefill.get("duration"))
+        )
 
 
 class ScheduleButtonView(discord.ui.View):
@@ -744,7 +859,10 @@ class ScheduleButtonView(discord.ui.View):
 
     @discord.ui.button(label="設定排程", emoji="📅", style=discord.ButtonStyle.primary, custom_id="satoai:btn_schedule")
     async def go(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ScheduleModal(await get_referenced_text(interaction)))
+        prefill = await get_prefill(interaction)
+        await interaction.response.send_modal(
+            ScheduleModal(prefill.get("event") or "", prefill.get("time"))
+        )
 
 
 class PollButtonView(discord.ui.View):
@@ -788,6 +906,75 @@ class AnswerButtonView(discord.ui.View):
             return
         prefix = f"🔍 (web search: {query})\n" if query else ""
         await interaction.followup.send(prefix + reply[:2000])
+
+
+EXTRACTION_PROMPT = (
+    "Extract structured info from the user's message. Reply with ONLY a JSON object, "
+    "no markdown, no explanation:\n"
+    '{"event": "the thing to do (strip trigger words like remind me/提醒我, times, '
+    'and durations; empty string if none)", '
+    '"duration": "offset like 5m, 2h, 1d, 1h30m or null", '
+    '"time": "daily time HH:MM 24h format or null", '
+    '"intents": ["any of: remind, schedule, poll, help — only if the user wants that '
+    'feature now; empty list otherwise. Daily/recurring requests (每天/每晚/daily) '
+    'mean schedule, not remind"]}'
+)
+
+extractions: dict[int, dict] = {}
+
+
+def llm_extract(text: str) -> dict:
+    try:
+        reply = ask_scrp(
+            [
+                {"role": "system", "content": EXTRACTION_PROMPT},
+                {"role": "user", "content": text or ""},
+            ]
+        )
+        start, end = reply.find("{"), reply.rfind("}")
+        if start == -1 or end == -1:
+            return {}
+        data = json.loads(reply[start : end + 1])
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def remember_extraction(message_id: int, data: dict) -> None:
+    if not data:
+        return
+    extractions[message_id] = data
+    while len(extractions) > 200:
+        extractions.pop(next(iter(extractions)))
+
+
+async def get_prefill(interaction: discord.Interaction) -> dict:
+    mid = None
+    if interaction.message is not None and interaction.message.reference:
+        mid = interaction.message.reference.message_id
+    if mid is not None and mid in extractions:
+        return extractions[mid]
+    text = await get_referenced_text(interaction)
+    return {
+        "event": extract_event(text),
+        "duration": extract_duration_token(text),
+        "time": extract_time_token(text),
+        "intents": [],
+    }
+
+
+def views_for_intents(intents: list) -> list:
+    out = []
+    for i in intents or []:
+        if i == "remind":
+            out.append(RemindButtonView())
+        elif i == "schedule":
+            out.append(ScheduleButtonView())
+        elif i == "poll":
+            out.append(PollButtonView())
+        elif i == "help":
+            out.append(HelpButtonView())
+    return out
 
 
 def detect_intents(text: str) -> list[dict]:
@@ -1214,9 +1401,15 @@ async def on_message(message: discord.Message) -> None:
             if status:
                 await status.delete()
             async with message.channel.typing():
-                reply, query = await answer_with_search(
-                    message.author.id, content, message, author=message.author.display_name
+                reply_task = asyncio.create_task(
+                    answer_with_search(
+                        message.author.id, content, message, author=message.author.display_name
+                    )
                 )
+                extract_task = asyncio.to_thread(llm_extract, question or "")
+                reply, query = await reply_task
+                extraction = await extract_task
+            remember_extraction(message.id, extraction)
             fetched = []
             if isinstance(content, list):
                 for p in content:
@@ -1227,12 +1420,18 @@ async def on_message(message: discord.Message) -> None:
             if query:
                 prefix += f"🔍 (web search: {query})\n"
             update_history(message.author.id, question or "[attached file(s)]", reply)
-            intent_view = build_intent_view(question or "")
+            intent_views = views_for_intents(extraction.get("intents")) or detect_intents(question or "")
+            combined = None
+            if intent_views:
+                combined = discord.ui.View(timeout=None)
+                for v in intent_views:
+                    for child in v.children:
+                        combined.add_item(child)
             chunks = [reply[i : i + 2000] for i in range(0, len(reply), 2000)]
             for i, chunk in enumerate(chunks):
                 await message.reply(
                     (prefix if i == 0 else "") + chunk,
-                    view=intent_view if i == len(chunks) - 1 else None,
+                    view=combined if i == len(chunks) - 1 else None,
                 )
             await unreact(message, "👀")
             await react(message, "✅")
