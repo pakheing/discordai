@@ -781,7 +781,9 @@ async def read_url(interaction: discord.Interaction, url: str, question: str = N
 
 async def run_schedule(s: dict) -> None:
     channel = bot.get_channel(s["channel_id"])
+    print(f"[schedule] firing #{s['id']} at {s['time']} in channel {s['channel_id']}")
     if channel is None:
+        print(f"[schedule] channel {s['channel_id']} not found/visible — skipped")
         return
     try:
         reply, query = await answer_with_search(s.get("owner_id", 0), s["prompt"])
@@ -800,15 +802,21 @@ async def run_schedule(s: dict) -> None:
 
 
 async def schedule_loop() -> None:
+    print(f"[schedule] loop started, {len(schedules)} schedule(s) loaded")
+    for s in schedules:
+        print(f"[schedule] #{s['id']} daily {s['time']} -> channel {s['channel_id']}: {s['prompt'][:50]}")
     while True:
-        now = datetime.now(get_tz())
-        today = now.strftime("%Y-%m-%d")
-        hhmm = now.strftime("%H:%M")
-        for s in schedules:
-            if s.get("time") == hhmm and s.get("last_run") != today:
-                s["last_run"] = today
-                save_schedules()
-                asyncio.create_task(run_schedule(s))
+        try:
+            now = datetime.now(get_tz())
+            today = now.strftime("%Y-%m-%d")
+            hhmm = now.strftime("%H:%M")
+            for s in schedules:
+                if s.get("time") == hhmm and s.get("last_run") != today:
+                    s["last_run"] = today
+                    save_schedules()
+                    asyncio.create_task(run_schedule(s))
+        except Exception as e:
+            print(f"[schedule] loop error: {type(e).__name__}: {e}")
         await asyncio.sleep(20)
 
 
