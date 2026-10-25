@@ -114,19 +114,27 @@ def save_history() -> None:
 
 
 def ask_scrp(messages: list[dict]) -> str:
-    resp = requests.post(
-        SCRP_API_URL,
-        headers={"Authorization": f"Bearer {SCRP_API_KEY}"},
-        json={"model": SCRP_MODEL, "messages": messages},
-        timeout=120,
-    )
-    if not resp.ok:
+    for attempt in range(2):
+        resp = requests.post(
+            SCRP_API_URL,
+            headers={"Authorization": f"Bearer {SCRP_API_KEY}"},
+            json={"model": SCRP_MODEL, "messages": messages},
+            timeout=120,
+        )
+        if resp.ok:
+            return resp.json()["choices"][0]["message"]["content"]
         try:
             detail = resp.json().get("detail") or resp.text[:300]
         except ValueError:
             detail = resp.text[:300]
+        if (
+            resp.status_code == 400
+            and attempt == 0
+            and any(k in str(detail).lower() for k in ("pipe", "socket", "timed out", "timeout"))
+        ):
+            time.sleep(2)
+            continue
         raise RuntimeError(f"API error {resp.status_code}: {detail}")
-    return resp.json()["choices"][0]["message"]["content"]
 
 
 def get_tz() -> ZoneInfo:
@@ -141,7 +149,15 @@ def message_size(m: dict) -> int:
     if isinstance(c, str):
         return len(c)
     if isinstance(c, list):
-        return sum(len(p.get("text", "")) for p in c if isinstance(p, dict))
+        total = 0
+        for p in c:
+            if not isinstance(p, dict):
+                continue
+            total += len(p.get("text", ""))
+            img = p.get("image_url")
+            if isinstance(img, dict):
+                total += len(img.get("url", ""))
+        return total
     return 0
 
 
@@ -150,6 +166,16 @@ def clamp_messages(msgs: list[dict]) -> list[dict]:
     while total > MAX_REQUEST_CHARS and len(msgs) > 3:
         removed = msgs.pop(1)
         total -= message_size(removed)
+    if total > MAX_REQUEST_CHARS and len(msgs) > 1:
+        for m in msgs[:-1]:
+            c = m.get("content")
+            if isinstance(c, list):
+                for p in c:
+                    if isinstance(p, dict) and "image_url" in p:
+                        total -= len(p["image_url"].get("url", ""))
+                        p.pop("image_url")
+                        p.setdefault("text", "")
+                        p["text"] += "\n[image omitted to save space]"
     cap = MAX_REQUEST_CHARS // 4
     for m in msgs[1:]:
         c = m.get("content")
@@ -224,6 +250,20 @@ async def append_url_parts(parts: list[dict], question: str) -> None:
             )
 
 
+def compress_image(data: bytes) -> bytes:
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(data))
+        img = img.convert("RGB")
+        img.thumbnail((1024, 1024))
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=85)
+        return out.getvalue()
+    except Exception:
+        return data
+
+
 async def build_content(message: discord.Message, question: str) -> list[dict] | str:
     if not message.attachments:
         parts: list[dict] = [{"type": "text", "text": question or ""}]
@@ -235,11 +275,12 @@ async def build_content(message: discord.Message, question: str) -> list[dict] |
         try:
             if att.content_type and att.content_type.startswith("image/"):
                 data = await att.read()
+                data = await asyncio.to_thread(compress_image, data)
                 b64 = base64.b64encode(data).decode()
                 parts.append(
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:{att.content_type};base64,{b64}"},
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
                     }
                 )
             elif name.endswith(".pdf"):
@@ -926,6 +967,8 @@ def main() -> None:
     if not SCRP_API_KEY:
         raise SystemExit("Set the SCRP_API_KEY environment variable.")
     load_history()
+    load_memories()
+    load_schedules()
     threading.Thread(target=run_web_server, daemon=True).start()
     delay = 30
     while True:
