@@ -80,11 +80,13 @@ def save_settings() -> None:
         print(f"Warning: could not save settings: {e}")
 
 
-def user_max_messages(uid: int) -> int:
-    try:
-        turns = int(user_settings.get(uid, {}).get("max_history") or 15)
-    except (TypeError, ValueError):
-        turns = 15
+def user_max_messages(key) -> int:
+    turns = 15
+    if isinstance(key, int):
+        try:
+            turns = int(user_settings.get(key, {}).get("max_history") or 15)
+        except (TypeError, ValueError):
+            turns = 15
     return max(2, min(turns, 20)) * 2
 
 
@@ -128,8 +130,13 @@ def load_history() -> None:
     try:
         with open(HISTORY_FILE, encoding="utf-8") as f:
             raw = json.load(f)
-        history = {int(k): v for k, v in raw.items()}
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        history = {}
+        for k, v in raw.items():
+            try:
+                history[int(k)] = v
+            except ValueError:
+                history[k] = v
+    except (FileNotFoundError, json.JSONDecodeError):
         history = {}
 
 
@@ -216,7 +223,7 @@ def clamp_messages(msgs: list[dict]) -> list[dict]:
     return msgs
 
 
-def build_messages(user_id: int, user_message, author: str = None) -> list[dict]:
+def build_messages(user_id: int, user_message, author: str = None, history_key=None) -> list[dict]:
     now = datetime.now(get_tz())
     who = f"\n\nYou are currently talking to {author} in Discord. Address them by name when natural." if author else ""
     facts = memories.get(user_id, [])
@@ -258,7 +265,7 @@ def build_messages(user_id: int, user_message, author: str = None) -> list[dict]
             ),
         }
     ]
-    msgs.extend(history.get(user_id, []))
+    msgs.extend(history.get(history_key if history_key is not None else user_id, []))
     msgs.append({"role": "user", "content": user_message})
     style = (user_settings.get(user_id, {}) or {}).get("style")
     if style:
@@ -533,8 +540,10 @@ def wants_hko_weather(query: str) -> bool:
     return any(t in q for t in WEATHER_TERMS) and any(t in q for t in HK_TERMS)
 
 
-async def answer_with_search(user_id: int, content, message: discord.Message = None, author: str = None):
-    msgs = build_messages(user_id, content, author)
+async def answer_with_search(
+    user_id: int, content, message: discord.Message = None, author: str = None, history_key=None
+):
+    msgs = build_messages(user_id, content, author, history_key)
     base_system = msgs[0]["content"]
     msgs[0] = {"role": "system", "content": base_system + SEARCH_INSTRUCTION}
     reply = await asyncio.to_thread(ask_scrp, msgs)
@@ -1207,19 +1216,25 @@ async def poll(
     await interaction.response.send_message(poll=p)
 
 
-@bot.tree.command(name="reset", description="清除你的對話記錄")
+@bot.tree.command(name="reset", description="清除對話記錄")
 async def reset(interaction: discord.Interaction) -> None:
     history.pop(interaction.user.id, None)
+    cleared = "已清除你的個人對話記錄。"
+    if in_ai_channel(interaction.channel):
+        history.pop(f"channel:{interaction.channel_id}", None)
+        cleared += "（此頻道的共享對話記錄亦已清除）"
     save_history()
-    await interaction.response.send_message("已清除你的對話記錄。")
+    await interaction.response.send_message(cleared)
 
 
 @bot.tree.command(name="history", description="顯示我記得多少段對話")
 async def history_cmd(interaction: discord.Interaction) -> None:
-    turns = len(history.get(interaction.user.id, [])) // 2
-    await interaction.response.send_message(
-        f"你目前有 {turns} 段對話記錄（最多保留 {MAX_HISTORY // 2} 段）。"
-    )
+    personal = len(history.get(interaction.user.id, [])) // 2
+    msg = f"你的個人對話記錄：{personal} 段。"
+    if in_ai_channel(interaction.channel):
+        shared = len(history.get(f"channel:{interaction.channel_id}", [])) // 2
+        msg += f"\n此頻道的共享對話記錄：{shared} 段（多人共用）。"
+    await interaction.response.send_message(msg)
 
 
 @bot.tree.command(name="remind", description="設定提醒")
@@ -1524,13 +1539,20 @@ async def on_message(message: discord.Message) -> None:
                 f"🌐 Fetching {min(len(urls), MAX_URLS_PER_MESSAGE)} web page(s)..."
             )
         try:
+            hkey = message.author.id
+            if in_ai_channel(message.channel):
+                hkey = f"channel:{message.channel.id}"
             content = await build_content(message, question or "")
             if status:
                 await status.delete()
             async with message.channel.typing():
                 reply_task = asyncio.create_task(
                     answer_with_search(
-                        message.author.id, content, message, author=message.author.display_name
+                        message.author.id,
+                        content,
+                        message,
+                        author=message.author.display_name,
+                        history_key=hkey,
                     )
                 )
                 extract_task = asyncio.to_thread(llm_extract, question or "")
@@ -1546,7 +1568,7 @@ async def on_message(message: discord.Message) -> None:
             prefix = f"🌐 (read: {', '.join(fetched)})\n" if fetched else ""
             if query:
                 prefix += f"🔍 (web search: {query})\n"
-            update_history(message.author.id, question or "[attached file(s)]", reply)
+            update_history(hkey, question or "[attached file(s)]", reply)
             if message.author.id not in user_settings:
                 user_settings[message.author.id] = {"max_history": 15, "style": ""}
                 save_settings()
