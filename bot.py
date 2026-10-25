@@ -167,6 +167,10 @@ def build_messages(user_id: int, user_message, author: str = None) -> list[dict]
                 "- `/history` — show conversation turns\n"
                 "- `/reset` — clear your chat history\n\n"
                 "You cannot create images yourself — tell users to use `/image`.\n"
+                "Do NOT end your replies with follow-up questions or offers such as "
+                "「還有什麼想知道？」「需要我幫你做其他事嗎？」— just answer the question "
+                "and stop. Only ask a clarifying question if the request is genuinely "
+                "impossible to answer without it.\n"
                 "If the user's message contains a URL, webpage content is automatically "
                 "fetched and included in your context as \"[Web page N: ...]\" — use that "
                 "content to answer directly. Only suggest `/read` if no webpage content "
@@ -361,6 +365,7 @@ class SCRPBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
+        self.add_view(ImageGenView())
         await self.tree.sync()
 
     async def on_ready(self) -> None:
@@ -370,9 +375,10 @@ class SCRPBot(commands.Bot):
 bot = SCRPBot()
 
 
-async def send_reply(target, reply: str) -> None:
-    for chunk in [reply[i : i + 2000] for i in range(0, len(reply), 2000)]:
-        await target.send(chunk)
+async def send_reply(target, reply: str, view=None) -> None:
+    chunks = [reply[i : i + 2000] for i in range(0, len(reply), 2000)]
+    for i, chunk in enumerate(chunks):
+        await target.send(chunk, view=view if i == len(chunks) - 1 else None)
 
 
 def format_search_results(results: list[dict]) -> str:
@@ -490,7 +496,7 @@ async def ask(interaction: discord.Interaction, question: str) -> None:
         return
     update_history(interaction.user.id, question, reply)
     prefix = f"🔍 (web search: {query})\n" if query else ""
-    await send_reply(interaction.followup, prefix + reply)
+    await send_reply(interaction.followup, prefix + reply, view=maybe_image_view(reply))
 
 
 @bot.tree.command(name="aihelp", description="顯示我能做什麼")
@@ -715,10 +721,78 @@ async def read_url(interaction: discord.Interaction, url: str, question: str = N
     await interaction.followup.send(reply[:2000])
 
 
-@bot.tree.command(name="image", description="根據描述生成圖片")
-@app_commands.describe(prompt="想畫什麼")
-async def image(interaction: discord.Interaction, prompt: str) -> None:
-    await interaction.response.defer()
+CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
+
+
+def has_cjk(text: str) -> bool:
+    return bool(CJK_RE.search(text))
+
+
+def translate_to_english(prompt: str) -> str:
+    reply = ask_scrp(
+        [
+            {
+                "role": "system",
+                "content": "Translate the following image-generation prompt into concise "
+                "English suitable for an image generation model. Reply with ONLY the "
+                "English translation, nothing else.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+    )
+    return reply.strip().strip('"')
+
+
+class ImagePromptModal(discord.ui.Modal, title="生成圖片"):
+    prompt = discord.ui.TextInput(
+        label="圖片描述",
+        placeholder="例如：一隻在太空漂浮的貓，數碼藝術風格",
+        max_length=500,
+    )
+
+    def __init__(self, message: discord.Message = None) -> None:
+        super().__init__()
+        self.message = message
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        if self.message is not None:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+        await generate_and_send(interaction.followup, str(self.prompt))
+
+
+class ImageGenView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="生成圖片",
+        style=discord.ButtonStyle.primary,
+        emoji="🎨",
+        custom_id="satoai:image_gen",
+    )
+    async def gen_image(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ImagePromptModal(interaction.message))
+
+
+def maybe_image_view(reply: str) -> ImageGenView | None:
+    return ImageGenView() if "/image" in reply else None
+
+
+async def generate_and_send(target, prompt: str) -> None:
+    note = ""
+    if has_cjk(prompt):
+        note = "⚠️ 圖片生成模型對中文支援有限，建議使用英文描述。\n"
+        try:
+            en_prompt = await asyncio.to_thread(translate_to_english, prompt)
+            if en_prompt:
+                note += f"已自動翻譯成英文：**{en_prompt}**\n"
+                prompt = en_prompt
+        except Exception:
+            pass
     url = (
         "https://image.pollinations.ai/prompt/"
         f"{requests.utils.quote(prompt)}?width=1024&height=1024&nologo=true"
@@ -726,24 +800,29 @@ async def image(interaction: discord.Interaction, prompt: str) -> None:
     try:
         resp = await asyncio.to_thread(requests.get, url, None, {"timeout": 300})
     except requests.RequestException as e:
-        await interaction.followup.send(f"生成圖片時出錯：{e}")
+        await target.send(note + f"生成圖片時出錯：{e}")
         return
     if resp.status_code != 200 or "image" not in resp.headers.get("Content-Type", ""):
-        await interaction.followup.send(
-            f"圖片生成失敗（HTTP {resp.status_code}），請試試其他描述。"
-        )
+        await target.send(note + f"圖片生成失敗（HTTP {resp.status_code}），請試試其他描述。")
         return
     if len(resp.content) < 5000:
-        await interaction.followup.send("圖片生成傳回空結果，請再試一次。")
+        await target.send(note + "圖片生成傳回空結果，請再試一次。")
         return
     fd, filename = tempfile.mkstemp(suffix=".png")
     os.close(fd)
     try:
         with open(filename, "wb") as f:
             f.write(resp.content)
-        await interaction.followup.send(file=discord.File(filename, filename="generated.png"))
+        await target.send(content=note, file=discord.File(filename, filename="generated.png"))
     finally:
         os.remove(filename)
+
+
+@bot.tree.command(name="image", description="根據描述生成圖片")
+@app_commands.describe(prompt="想畫什麼（中文會自動翻譯成英文，效果更佳）")
+async def image(interaction: discord.Interaction, prompt: str) -> None:
+    await interaction.response.defer()
+    await generate_and_send(interaction.followup, prompt)
 
 
 def in_ai_channel(channel) -> bool:
@@ -813,8 +892,12 @@ async def on_message(message: discord.Message) -> None:
                 prefix += f"🔍 (web search: {query})\n"
             update_history(message.author.id, question or "[attached file(s)]", reply)
             chunks = [reply[i : i + 2000] for i in range(0, len(reply), 2000)]
+            view = maybe_image_view(reply)
             for i, chunk in enumerate(chunks):
-                await message.reply((prefix if i == 0 else "") + chunk)
+                await message.reply(
+                    (prefix if i == 0 else "") + chunk,
+                    view=view if i == len(chunks) - 1 else None,
+                )
             await unreact(message, "👀")
             await react(message, "✅")
         except Exception as e:
