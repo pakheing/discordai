@@ -894,13 +894,27 @@ async def schedules_cmd(interaction: discord.Interaction) -> None:
 
 
 @bot.tree.command(name="unschedule", description="刪除排程訊息")
-@app_commands.describe(number="要刪除的排程編號（用 /schedules 查看）")
-async def unschedule(interaction: discord.Interaction, number: int) -> None:
+@app_commands.describe(number="要刪除的排程編號（用 /schedules 查看），或 all 全部刪除")
+async def unschedule(interaction: discord.Interaction, number: str = "") -> None:
+    if number.lower() == "all":
+        count = len(schedules)
+        schedules.clear()
+        save_schedules()
+        await interaction.response.send_message(
+            f"已刪除全部 {count} 個排程。🧹", ephemeral=True
+        )
+        return
+    if not number or not number.isdigit():
+        await interaction.response.send_message(
+            "請輸入要刪除的排程編號（用 /schedules 查看），或輸入 all 全部刪除。", ephemeral=True
+        )
+        return
+    num = int(number)
     for i, s in enumerate(schedules):
-        if s["id"] == number:
+        if s["id"] == num:
             schedules.pop(i)
             save_schedules()
-            await interaction.response.send_message(f"已刪除排程 {number}。", ephemeral=True)
+            await interaction.response.send_message(f"已刪除排程 {num}。", ephemeral=True)
             return
     await interaction.response.send_message("找不到該編號的排程。", ephemeral=True)
 
