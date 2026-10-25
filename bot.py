@@ -423,6 +423,9 @@ async def start_web_server() -> None:
     print(f"Keep-alive web server listening on port {port}")
 
 
+background_tasks: set[asyncio.Task] = set()
+
+
 class SCRPBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
@@ -430,7 +433,9 @@ class SCRPBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
-        asyncio.create_task(schedule_loop())
+        task = asyncio.create_task(schedule_loop())
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
         await self.tree.sync()
 
     async def on_ready(self) -> None:
