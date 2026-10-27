@@ -1302,8 +1302,11 @@ async def reset(interaction: discord.Interaction) -> None:
     history.pop(interaction.user.id, None)
     cleared = "已清除你的個人對話記錄。"
     if in_ai_channel(interaction.channel):
-        history.pop(f"channel:{interaction.channel_id}", None)
-        cleared += "（此頻道的共享對話記錄亦已清除）"
+        if can_manage_channel_settings(interaction):
+            history.pop(f"channel:{interaction.channel_id}", None)
+            cleared += "（此頻道的共享對話記錄亦已清除）"
+        else:
+            cleared += "（此頻道的共享對話記錄只限擁有「管理伺服器」權限的成員清除）"
     save_history()
     await interaction.response.send_message(cleared)
 
@@ -1549,6 +1552,11 @@ class ConfirmUnscheduleAllView(discord.ui.View):
 @bot.tree.command(name="unschedule", description="刪除排程訊息")
 @app_commands.describe(number="要刪除的排程編號（用 /schedules 查看），或 all 全部刪除")
 async def unschedule(interaction: discord.Interaction, number: str) -> None:
+    if not can_manage_channel_settings(interaction):
+        await interaction.response.send_message(
+            "刪除排程只限擁有「管理伺服器」權限的成員。", ephemeral=True
+        )
+        return
     if number.lower() == "all":
         await interaction.response.send_message(
             f"確定要刪除全部 {len(schedules)} 個排程嗎？此操作無法復原。",
