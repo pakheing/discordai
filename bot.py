@@ -24,7 +24,7 @@ SCRP_API_URL = os.environ.get(
     "SCRP_API_URL", "https://scrp-chat.econ.cuhk.edu.hk/api/chat/completions"
 )
 SCRP_API_KEY = os.environ.get("SCRP_API_KEY")
-SCRP_MODEL = os.environ.get("SCRP_MODEL", "scrp-assistant")
+SCRP_MODEL = os.environ.get("SCRP_MODEL", "default")
 DISCORD_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 SYSTEM_PROMPT = os.environ.get(
     "SYSTEM_PROMPT", "You are a helpful assistant in a Discord server. Keep replies concise."
@@ -254,8 +254,6 @@ def build_messages(user_id: int, user_message, author: str = None, history_key=N
                 "- `/reset` — clear your chat history\n"
                 "- `/aisetting` — set personal memory limit and tone/style\n"
                 "- `/aihelp` — show help\n\n"
-                "You do NOT have image generation. If asked to generate, draw, or create "
-                "an image, politely say you cannot do that.\n"
                 "Do NOT end your replies with follow-up questions or offers such as "
                 "「還有什麼想知道？」「需要我幫你做其他事嗎？」— just answer the question "
                 "and stop. Only ask a clarifying question if the request is genuinely "
