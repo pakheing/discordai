@@ -1275,21 +1275,28 @@ async def summarize(interaction: discord.Interaction, count: int = 50) -> None:
     try:
         count = max(10, min(count, 200))
         lines = []
+        fetched = 0
         async for m in interaction.channel.history(limit=count):
-            if m.author.bot:
+            fetched += 1
+            if m.author.bot and (bot.user is None or m.author.id != bot.user.id):
                 continue
             text = m.content.strip()
+            if m.attachments:
+                text += f" [附件 x{len(m.attachments)}]" if text else "[附件]"
             if not text:
                 continue
-            if m.attachments:
-                text += f" [附件 x{len(m.attachments)}]"
+            name = m.author.display_name
+            if m.author.bot:
+                name = f"🤖 {name}"
             stamp = m.created_at.astimezone(get_tz()).strftime("%m-%d %H:%M")
-            lines.append(f"[{stamp}] {m.author.display_name}: {text[:400]}")
+            lines.append(f"[{stamp}] {name}: {text[:400]}")
         lines.reverse()
         if not lines:
             await interaction.followup.send("這個頻道最近沒有可總結的訊息。")
             return
-        await interaction.followup.send(f"📖 已讀取 {len(lines)} 則訊息，正在總結…")
+        await interaction.followup.send(
+            f"📖 已讀取 {len(lines)}/{fetched} 則訊息（已略過機械人訊息），正在總結…"
+        )
         transcript = "\n".join(lines)[-15000:]
         reply = await asyncio.to_thread(
             ask_scrp,
