@@ -1272,24 +1272,25 @@ async def forget(interaction: discord.Interaction, number: str) -> None:
 @app_commands.describe(count="要總結的訊息數量（預設50，最多200）")
 async def summarize(interaction: discord.Interaction, count: int = 50) -> None:
     await interaction.response.defer()
-    count = max(10, min(count, 200))
-    lines = []
-    async for m in interaction.channel.history(limit=count):
-        if m.author.bot:
-            continue
-        text = m.content.strip()
-        if not text:
-            continue
-        if m.attachments:
-            text += f" [附件 x{len(m.attachments)}]"
-        stamp = m.created_at.astimezone(get_tz()).strftime("%m-%d %H:%M")
-        lines.append(f"[{stamp}] {m.author.display_name}: {text[:400]}")
-    lines.reverse()
-    if not lines:
-        await interaction.followup.send("這個頻道最近沒有可總結的訊息。")
-        return
-    transcript = "\n".join(lines)[-15000:]
     try:
+        count = max(10, min(count, 200))
+        lines = []
+        async for m in interaction.channel.history(limit=count):
+            if m.author.bot:
+                continue
+            text = m.content.strip()
+            if not text:
+                continue
+            if m.attachments:
+                text += f" [附件 x{len(m.attachments)}]"
+            stamp = m.created_at.astimezone(get_tz()).strftime("%m-%d %H:%M")
+            lines.append(f"[{stamp}] {m.author.display_name}: {text[:400]}")
+        lines.reverse()
+        if not lines:
+            await interaction.followup.send("這個頻道最近沒有可總結的訊息。")
+            return
+        await interaction.followup.send(f"📖 已讀取 {len(lines)} 則訊息，正在總結…")
+        transcript = "\n".join(lines)[-15000:]
         reply = await asyncio.to_thread(
             ask_scrp,
             [
