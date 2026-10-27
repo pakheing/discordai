@@ -92,7 +92,7 @@ def user_max_messages(key) -> int:
             turns = int(user_settings.get(key, {}).get("max_history") or 15)
         except (TypeError, ValueError):
             turns = 15
-    return max(2, min(turns, 20)) * 2
+    return max(2, min(turns, 30)) * 2
 
 
 def load_schedules() -> None:
@@ -263,6 +263,7 @@ def build_messages(user_id: int, user_message, author: str = None, history_key=N
                 f"{SYSTEM_PROMPT}\n\n"
                 f"Current date and time: {now.strftime('%A, %Y-%m-%d %H:%M (%Z)')}.{who}{known}\n\n"
                 "You are a Discord bot. Available commands:\n"
+                "- `/summarize [count]` — summarize recent channel messages\n"
                 "- `/ask <question>` — chat with the bot\n"
                 "- `/search <query>` — search the web\n"
                 "- `/read <url> [question]` — read and summarize a webpage\n"
@@ -663,6 +664,7 @@ HELP_TEXT = (
     "- `/read <網址> [問題]` — 讀取網頁並回答問題\n"
     "- `/remind <時間> <內容>` — 設定提醒，例如 `/remind 30m 做功課`\n"
     "- `/poll <問題> [選項]` — 建立投票，例如 `/poll 晚餐吃什麼 壽司, 披薩`\n"
+    "- `/summarize [數量]` — 總結最近的頻道對話，快速追上進度\n"
     "- `/remember <內容>` — 讓我長期記住關於你的事，例如 `/remember 我喜歡吃壽司`\n"
     "- `/memory` / `/forget` — 查看及刪除長期記憶\n"
     "- `/schedule <時間> <內容>` — 設定每日排程訊息，例如 `/schedule 08:30 今日香港天氣摘要`\n"
@@ -730,7 +732,7 @@ class AISettingsModal(discord.ui.Modal, title="設定"):
             self.title = "頻道設定"
         cur = user_settings.get(self.target_key, {})
         self.max_history = discord.ui.TextInput(
-            label="對話記憶上限（段數，2-20）",
+            label="對話記憶上限（段數，2-30）",
             placeholder="例如 10",
             default=str(cur.get("max_history") or 15),
             max_length=2,
@@ -751,10 +753,10 @@ class AISettingsModal(discord.ui.Modal, title="設定"):
             turns = int(str(self.max_history).strip())
         except ValueError:
             await interaction.response.send_message(
-                "記憶上限請輸入 2 至 20 之間的數字。", ephemeral=True
+                "記憶上限請輸入 2 至 30 之間的數字。", ephemeral=True
             )
             return
-        turns = max(2, min(turns, 20))
+        turns = max(2, min(turns, 30))
         cur = user_settings.get(self.target_key, {})
         cur["max_history"] = turns
         cur["style"] = str(self.style).strip()
@@ -1264,6 +1266,50 @@ async def forget(interaction: discord.Interaction, number: str) -> None:
         await interaction.response.send_message(
             "請輸入有效的編號（用 /memory 查看編號）或 all。", ephemeral=True
         )
+
+
+@bot.tree.command(name="summarize", description="總結最近的頻道對話")
+@app_commands.describe(count="要總結的訊息數量（預設50，最多200）")
+async def summarize(interaction: discord.Interaction, count: int = 50) -> None:
+    await interaction.response.defer()
+    count = max(10, min(count, 200))
+    lines = []
+    async for m in interaction.channel.history(limit=count):
+        if m.author.bot:
+            continue
+        text = m.content.strip()
+        if not text:
+            continue
+        if m.attachments:
+            text += f" [附件 x{len(m.attachments)}]"
+        stamp = m.created_at.astimezone(get_tz()).strftime("%m-%d %H:%M")
+        lines.append(f"[{stamp}] {m.author.display_name}: {text[:400]}")
+    lines.reverse()
+    if not lines:
+        await interaction.followup.send("這個頻道最近沒有可總結的訊息。")
+        return
+    transcript = "\n".join(lines)[-15000:]
+    try:
+        reply = await asyncio.to_thread(
+            ask_scrp,
+            [
+                {
+                    "role": "system",
+                    "content": "Summarize the following Discord channel conversation. "
+                    "Structure your answer as:\n"
+                    "1. 主要話題（bullet points）\n"
+                    "2. 各參與者的重點（by speaker name）\n"
+                    "3. 結論或待辦事項（如有）\n"
+                    "Reply in the same language as the conversation. Be concise.\n\n"
+                    f"CONVERSATION TRANSCRIPT:\n{transcript}",
+                },
+                {"role": "user", "content": "請總結以上對話。"},
+            ],
+        )
+    except Exception as e:
+        await interaction.followup.send(f"出錯：{type(e).__name__}: {e}")
+        return
+    await interaction.followup.send(reply[:2000])
 
 
 @bot.tree.command(name="poll", description="建立投票")
