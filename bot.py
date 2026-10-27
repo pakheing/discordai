@@ -24,7 +24,7 @@ SCRP_API_URL = os.environ.get(
     "SCRP_API_URL", "https://scrp-chat.econ.cuhk.edu.hk/api/chat/completions"
 )
 SCRP_API_KEY = os.environ.get("SCRP_API_KEY")
-SCRP_MODEL = os.environ.get("SCRP_MODEL", "default")
+SCRP_MODEL = os.environ.get("SCRP_MODEL", "scrp-assistant")
 DISCORD_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 SYSTEM_PROMPT = os.environ.get(
     "SYSTEM_PROMPT", "You are a helpful assistant in a Discord server. Keep replies concise."
@@ -67,8 +67,13 @@ def load_settings() -> None:
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as f:
             raw = json.load(f)
-        user_settings = {int(k): v for k, v in raw.items()}
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        user_settings = {}
+        for k, v in raw.items():
+            try:
+                user_settings[int(k)] = v
+            except ValueError:
+                user_settings[k] = v
+    except (FileNotFoundError, json.JSONDecodeError):
         user_settings = {}
 
 
@@ -112,8 +117,13 @@ def load_memories() -> None:
     try:
         with open(MEMORY_FILE, encoding="utf-8") as f:
             raw = json.load(f)
-        memories = {int(k): v for k, v in raw.items()}
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        memories = {}
+        for k, v in raw.items():
+            try:
+                memories[int(k)] = v
+            except ValueError:
+                memories[k] = v
+    except (FileNotFoundError, json.JSONDecodeError):
         memories = {}
 
 
@@ -223,13 +233,29 @@ def clamp_messages(msgs: list[dict]) -> list[dict]:
     return msgs
 
 
+def get_style(history_key, user_id: int) -> str:
+    if isinstance(history_key, str) and history_key.startswith("channel:"):
+        return (user_settings.get(history_key, {}) or {}).get("style") or ""
+    return (user_settings.get(user_id, {}) or {}).get("style") or ""
+
+
 def build_messages(user_id: int, user_message, author: str = None, history_key=None) -> list[dict]:
     now = datetime.now(get_tz())
-    who = f"\n\nYou are currently talking to {author} in Discord. Address them by name when natural." if author else ""
-    facts = memories.get(user_id, [])
+    if isinstance(history_key, str) and history_key.startswith("channel:"):
+        who = (
+            "\n\nThis is a SHARED group channel: multiple people talk here, and past user "
+            "messages in the history are prefixed with [DisplayName]. You are currently "
+            f"talking to {author}. Keep track of who said what."
+        ) if author else ""
+    else:
+        who = f"\n\nYou are currently talking to {author} in Discord. Address them by name when natural." if author else ""
+    facts = []
+    if isinstance(history_key, str) and history_key.startswith("channel:"):
+        facts.extend(memories.get(history_key, []))
+    facts.extend(memories.get(user_id, []))
     known = ""
     if facts:
-        known = "\n\nKnown facts about the current user (long-term memory):\n- " + "\n- ".join(facts)
+        known = "\n\nKnown facts (long-term memory):\n- " + "\n- ".join(facts)
     msgs = [
         {
             "role": "system",
@@ -254,6 +280,8 @@ def build_messages(user_id: int, user_message, author: str = None, history_key=N
                 "- `/reset` — clear your chat history\n"
                 "- `/aisetting` — set personal memory limit and tone/style\n"
                 "- `/aihelp` — show help\n\n"
+                "You do NOT have image generation. If asked to generate, draw, or create "
+                "an image, politely say you cannot do that.\n"
                 "Do NOT end your replies with follow-up questions or offers such as "
                 "「還有什麼想知道？」「需要我幫你做其他事嗎？」— just answer the question "
                 "and stop. Only ask a clarifying question if the request is genuinely "
@@ -267,9 +295,9 @@ def build_messages(user_id: int, user_message, author: str = None, history_key=N
     ]
     msgs.extend(history.get(history_key if history_key is not None else user_id, []))
     msgs.append({"role": "user", "content": user_message})
-    style = (user_settings.get(user_id, {}) or {}).get("style")
+    style = get_style(history_key, user_id)
     if style:
-        msgs[0]["content"] += f"\n\nThe user's preferred tone/style: {style}"
+        msgs[0]["content"] += f"\n\nPreferred tone/style: {style}"
     return clamp_messages(msgs)
 
 
@@ -641,7 +669,7 @@ HELP_TEXT = (
     "- `/schedules` / `/unschedule` — 查看及刪除排程\n"
     "- `/history` — 顯示我記得多少段對話\n"
     "- `/reset` — 清除你的對話記錄\n"
-    "- `/aisetting` — 設定對話記憶上限同語氣風格\n\n"
+    "- `/aisetting` — 設定對話記憶上限及語氣風格\n\n"
     "**你訊息上的反應**\n"
     "👀 處理中 → ✅ 完成 → ❌ 出錯"
 )
@@ -687,10 +715,20 @@ def extract_duration_token(text: str) -> str | None:
     return f"{value}{u}"
 
 
-class AISettingsModal(discord.ui.Modal, title="個人設定"):
-    def __init__(self, uid: int) -> None:
+def settings_target_for_channel(channel) -> tuple:
+    if in_ai_channel(channel):
+        return f"channel:{channel.id}", True
+    return None, False
+
+
+class AISettingsModal(discord.ui.Modal, title="設定"):
+    def __init__(self, uid: int, target_key=None, channel_mode: bool = False) -> None:
         super().__init__()
-        cur = user_settings.get(uid, {})
+        self.target_key = target_key if target_key is not None else uid
+        self.channel_mode = channel_mode
+        if channel_mode:
+            self.title = "頻道設定"
+        cur = user_settings.get(self.target_key, {})
         self.max_history = discord.ui.TextInput(
             label="對話記憶上限（段數，2-20）",
             placeholder="例如 10",
@@ -698,7 +736,7 @@ class AISettingsModal(discord.ui.Modal, title="個人設定"):
             max_length=2,
         )
         self.style = discord.ui.TextInput(
-            label="語氣同風格（可留空）",
+            label="語氣及風格（可留空）" if not channel_mode else "頻道語氣風格（適用於所有人）",
             placeholder="例如：正式一點、用英文、多一些emoji、簡短直接…",
             default=cur.get("style") or "",
             style=discord.TextStyle.paragraph,
@@ -717,14 +755,14 @@ class AISettingsModal(discord.ui.Modal, title="個人設定"):
             )
             return
         turns = max(2, min(turns, 20))
-        uid = interaction.user.id
-        cur = user_settings.get(uid, {})
+        cur = user_settings.get(self.target_key, {})
         cur["max_history"] = turns
         cur["style"] = str(self.style).strip()
-        user_settings[uid] = cur
+        user_settings[self.target_key] = cur
         save_settings()
+        scope = "此頻道（適用於所有人）" if self.channel_mode else "你的個人設定"
         await interaction.response.send_message(
-            f"✅ 已更新設定：\n- 對話記憶上限：{turns} 段\n- 語氣風格：{cur['style'] or '（預設）'}",
+            f"✅ 已更新{scope}：\n- 對話記憶上限：{turns} 段\n- 語氣風格：{cur['style'] or '（預設）'}",
             ephemeral=True,
         )
 
@@ -733,14 +771,40 @@ class SettingsButtonView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="個人設定", emoji="⚙️", style=discord.ButtonStyle.primary, custom_id="satoai:btn_settings")
+    @discord.ui.button(label="設定", emoji="⚙️", style=discord.ButtonStyle.primary, custom_id="satoai:btn_settings")
     async def go(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(AISettingsModal(interaction.user.id))
+        target_key, channel_mode = settings_target_for_channel(interaction.channel)
+        if channel_mode and not can_manage_channel_settings(interaction):
+            await interaction.response.send_message(
+                "頻道設定只限擁有「管理伺服器」權限的成員修改。",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(
+            AISettingsModal(interaction.user.id, target_key, channel_mode)
+        )
 
 
-@bot.tree.command(name="aisetting", description="設定對話記憶上限同語氣風格")
+def can_manage_channel_settings(interaction: discord.Interaction) -> bool:
+    if interaction.guild is None:
+        return True
+    perms = interaction.user.guild_permissions
+    return perms.administrator or perms.manage_guild
+
+
+@bot.tree.command(name="aisetting", description="設定對話記憶上限及語氣風格")
 async def aisetting(interaction: discord.Interaction) -> None:
-    await interaction.response.send_modal(AISettingsModal(interaction.user.id))
+    target_key, channel_mode = settings_target_for_channel(interaction.channel)
+    if channel_mode and not can_manage_channel_settings(interaction):
+        await interaction.response.send_message(
+            "頻道設定只限擁有「管理伺服器」權限的成員修改。你可以隨時用 `/aisetting` "
+            "在私訊或其他頻道設定你的個人風格。",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_modal(
+        AISettingsModal(interaction.user.id, target_key, channel_mode)
+    )
 
 
 class RemindModal(discord.ui.Modal, title="設定提醒"):
@@ -1115,62 +1179,79 @@ async def aihelp(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(HELP_TEXT, ephemeral=True)
 
 
-@bot.tree.command(name="remember", description="讓我記住關於你的事")
+@bot.tree.command(name="remember", description="讓我記住一些事")
 @app_commands.describe(text="要記住的內容，例如：我喜歡吃壽司")
 async def remember(interaction: discord.Interaction, text: str) -> None:
-    uid = interaction.user.id
-    memories.setdefault(uid, [])
-    if len(memories[uid]) >= 50:
+    target_key, channel_mode = settings_target_for_channel(interaction.channel)
+    key = target_key if target_key is not None else interaction.user.id
+    memories.setdefault(key, [])
+    if len(memories[key]) >= 50:
         await interaction.response.send_message(
             "記憶已滿（50條），請先用 /forget 刪除部分舊記憶。", ephemeral=True
         )
         return
-    memories[uid].append(text[:300])
+    memories[key].append(text[:300])
     save_memories()
-    await interaction.response.send_message(f"記住了！📝 ({len(memories[uid])}/50)", ephemeral=True)
-
-
-@bot.tree.command(name="memory", description="查看我記住了關於你的事")
-async def memory_cmd(interaction: discord.Interaction) -> None:
-    facts = memories.get(interaction.user.id, [])
-    if not facts:
-        await interaction.response.send_message(
-            "我還沒記住任何關於你的事，請用 /remember 添加。", ephemeral=True
-        )
-        return
-    listing = "\n".join(f"{i + 1}. {f}" for i, f in enumerate(facts))
+    scope = "（已存入此頻道的共享記憶，所有人適用）" if channel_mode else ""
     await interaction.response.send_message(
-        f"我記住的關於你的事：\n{listing[:1900]}", ephemeral=True
+        f"記住了！📝 ({len(memories[key])}/50) {scope}", ephemeral=True
     )
 
 
+@bot.tree.command(name="memory", description="查看我記住了什麼")
+async def memory_cmd(interaction: discord.Interaction) -> None:
+    target_key, channel_mode = settings_target_for_channel(interaction.channel)
+    lines = []
+    if channel_mode:
+        shared = memories.get(target_key, [])
+        if shared:
+            listing = "\n".join(f"{i + 1}. {f}" for i, f in enumerate(shared))
+            lines.append(f"**此頻道的共享記憶（{len(shared)}條）：**\n{listing}")
+        else:
+            lines.append("**此頻道的共享記憶：** 無")
+    personal = memories.get(interaction.user.id, [])
+    if personal:
+        listing = "\n".join(f"{i + 1}. {f}" for i, f in enumerate(personal))
+        lines.append(f"**你的個人記憶（{len(personal)}條）：**\n{listing}")
+    else:
+        lines.append("**你的個人記憶：** 無（在私訊或其他頻道用 /remember 添加）")
+    await interaction.response.send_message("\n\n".join(lines)[:1900], ephemeral=True)
+
+
 class ConfirmForgetAllView(discord.ui.View):
-    def __init__(self) -> None:
+    def __init__(self, key) -> None:
         super().__init__(timeout=60)
+        self.key = key
 
     @discord.ui.button(label="確定清空", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        memories[interaction.user.id] = []
+        memories[self.key] = []
         save_memories()
-        await interaction.response.edit_message(content="已清空所有關於你的記憶。🧹", view=None)
+        await interaction.response.edit_message(content="已清空所有記憶。🧹", view=None)
 
     @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="已取消，記憶保持不變。", view=None)
 
 
-@bot.tree.command(name="forget", description="忘記關於你的記憶")
+@bot.tree.command(name="forget", description="忘記記憶")
 @app_commands.describe(number="要刪除的記憶編號（用 /memory 查看編號），或 all 全部清除")
 async def forget(interaction: discord.Interaction, number: str) -> None:
-    uid = interaction.user.id
-    facts = memories.get(uid, [])
+    target_key, channel_mode = settings_target_for_channel(interaction.channel)
+    if channel_mode and not can_manage_channel_settings(interaction):
+        await interaction.response.send_message(
+            "頻道共享記憶只限擁有「管理伺服器」權限的成員刪除。", ephemeral=True
+        )
+        return
+    key = target_key if target_key is not None else interaction.user.id
+    facts = memories.get(key, [])
     if not facts:
         await interaction.response.send_message("沒有可忘記的記憶。", ephemeral=True)
         return
     if number.lower() == "all":
         await interaction.response.send_message(
             f"確定要清空全部 {len(facts)} 條記憶嗎？此操作無法復原。",
-            view=ConfirmForgetAllView(),
+            view=ConfirmForgetAllView(key),
             ephemeral=True,
         )
         return
@@ -1568,7 +1649,11 @@ async def on_message(message: discord.Message) -> None:
             prefix = f"🌐 (read: {', '.join(fetched)})\n" if fetched else ""
             if query:
                 prefix += f"🔍 (web search: {query})\n"
-            update_history(hkey, question or "[attached file(s)]", reply)
+            if isinstance(hkey, str):
+                stored_question = f"[{message.author.display_name}] {question or ''}".strip()
+            else:
+                stored_question = question or "[attached file(s)]"
+            update_history(hkey, stored_question, reply)
             if message.author.id not in user_settings:
                 user_settings[message.author.id] = {"max_history": 15, "style": ""}
                 save_settings()
