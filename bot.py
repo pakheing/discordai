@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -434,6 +435,14 @@ def fetch_url_text(url: str) -> str:
     return text[:MAX_URL_CHARS]
 
 
+def safe_err(e: BaseException) -> str:
+    detail = f"{type(e).__name__}: {e}"
+    print(f"[error] {detail}", file=sys.stderr, flush=True)
+    msg = re.sub(r"https?://\S+", "[redacted]", detail)
+    msg = re.sub(r"host='[^']*'", "host=[redacted]", msg)
+    return "Error: " + msg
+
+
 def searxng_search(query: str, count: int = 5) -> list[dict] | None:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -461,19 +470,22 @@ def duckduckgo_search(query: str, count: int = 5) -> list[dict] | None:
         from ddgs import DDGS
     except ImportError:
         return None
-    try:
-        with DDGS() as ddgs:
-            hits = list(ddgs.text(query, max_results=count))
-        return [
-            {"title": h.get("title", ""), "url": h.get("href", ""), "content": h.get("body", "")}
-            for h in hits
-        ]
-    except Exception:
-        return None
+    for backend in ("google", "duckduckgo", "brave", "bing"):
+        try:
+            with DDGS() as ddgs:
+                hits = list(ddgs.text(query, max_results=count, backend=backend))
+            if hits:
+                return [
+                    {"title": h.get("title", ""), "url": h.get("href", ""), "content": h.get("body", "")}
+                    for h in hits
+                ]
+        except Exception:
+            continue
+    return None
 
 
 def web_search(query: str, count: int = 5) -> list[dict] | None:
-    return searxng_search(query, count) or duckduckgo_search(query, count)
+    return duckduckgo_search(query, count) or searxng_search(query, count)
 
 
 async def start_web_server() -> None:
@@ -543,12 +555,18 @@ SEARCH_INSTRUCTION = (
 
 
 WEATHER_TERMS = ("weather", "temperature", "forecast", "rain", "天氣", "气温", "氣溫", "溫度", "温度", "預報", "下雨")
-HK_TERMS = ("hong kong", " hk", "香港", "港島", "九龍", "新界")
+HK_TERMS = (
+    "hong kong", " hk", "香港", "港島", "九龍", "新界",
+    "馬鞍山", "沙田", "大埔", "荃灣", "元朗", "屯門", "將軍澳", "上水", "粉嶺", "西貢",
+    "長洲", "黃大仙", "觀塘", "旺角", "尖沙咀", "中環", "深水埗", "北角", "銅鑼灣",
+    "東涌", "赤柱", "啟德", "筲箕灣", "跑馬地", "藍田", "油塘", "太子", "九龍塘",
+    "何文田", "紅磡", "土瓜灣", "機場", "大美督", "打鼓嶺", "流浮山", "石崗", "青衣",
+)
 
 
 def fetch_hko_weather() -> str:
     out = []
-    for dtype in ("flw", "fnd"):
+    for dtype in ("rhrread", "flw", "fnd"):
         try:
             r = requests.get(
                 "https://data.weather.gov.hk/weatherAPI/opendata/weather.php",
@@ -640,7 +658,7 @@ async def ask(interaction: discord.Interaction, question: str) -> None:
             interaction.user.id, question, author=interaction.user.display_name
         )
     except Exception as e:
-        await interaction.followup.send(f"Error: {type(e).__name__}: {e}")
+        await interaction.followup.send(safe_err(e))
         return
     update_history(interaction.user.id, question, reply)
     prefix = f"🔍 (web search: {query})\n" if query else ""
@@ -1427,7 +1445,7 @@ async def search(interaction: discord.Interaction, query: str) -> None:
             ],
         )
     except Exception as e:
-        await interaction.followup.send(f"Error: {type(e).__name__}: {e}")
+        await interaction.followup.send(safe_err(e))
         return
     sources = "\n".join(f"[{i + 1}] <{r.get('url', '')}>" for i, r in enumerate(results))
     await interaction.followup.send(
@@ -1463,7 +1481,7 @@ async def read_url(interaction: discord.Interaction, url: str, question: str = N
             ],
         )
     except Exception as e:
-        await interaction.followup.send(f"Error: {type(e).__name__}: {e}")
+        await interaction.followup.send(safe_err(e))
         return
     await interaction.followup.send(reply[:2000])
 
@@ -1741,7 +1759,7 @@ async def on_message(message: discord.Message) -> None:
             await unreact(message, "👀")
             await react(message, "✅")
         except Exception as e:
-            await message.reply(f"Error: {type(e).__name__}: {e}")
+            await message.reply(safe_err(e))
             await unreact(message, "👀")
             await react(message, "❌")
 
